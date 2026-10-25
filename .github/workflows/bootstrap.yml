@@ -5,6 +5,9 @@ on:
     paths:
       - 'composer.json'
       - 'composer.lock'
+      - 'AGENTS.md'
+      - '.agent-loop/**'
+      - '.codex/**'
       - '.github/workflows/bootstrap.yml'
       - 'README.md'
       - 'docs/IMPLEMENTATION_PLAN.md'
@@ -27,23 +30,17 @@ jobs:
           coverage: none
       - name: Validate Composer manifest
         run: composer validate --no-check-publish
-      - name: Resolve and install declared workflow
+      - name: Install the locked workflow
         run: composer install --no-interaction --prefer-dist --no-progress
-      - name: Generate canonical project scaffold in isolated CI worktree
+      - name: Regenerate canonical project scaffold
         run: vendor/bin/agent-loop init scaffold --prefix=PRA --agent=codex
       - name: Diagnose project setup
         run: vendor/bin/agent-loop init doctor
       - name: Inspect host integration
         run: |
           vendor/bin/agent-loop init host-status --agent=codex --format=json > "$RUNNER_TEMP/host-status.json"
-          php -r '$status = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR); if (($status["host"] ?? null) !== "codex" || ($status["selection"] ?? null) === "missing") { fwrite(STDERR, "Explicit Codex host was not selected.\\n"); exit(1); }' "$RUNNER_TEMP/host-status.json"
-      - name: Verify generated instructions exist
-        run: test -f AGENTS.md && test -d .agent-loop
-      - name: Archive generated bootstrap outputs
-        run: tar -czf "$RUNNER_TEMP/bootstrap-output.tar.gz" composer.lock AGENTS.md .agent-loop .codex
-      - uses: actions/upload-artifact@v4
-        with:
-          name: bootstrap-output
-          path: ${{ runner.temp }}/bootstrap-output.tar.gz
-          if-no-files-found: error
-          retention-days: 1
+          php -r '$status = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR); if (($status["host"] ?? null) !== "codex" || ($status["selection"] ?? null) === "missing") { fwrite(STDERR, "Explicit Codex host was not selected.\n"); exit(1); }' "$RUNNER_TEMP/host-status.json"
+      - name: Check committed projection has no drift
+        run: |
+          git diff --exit-code -- composer.lock AGENTS.md .agent-loop .codex
+          test -z "$(git ls-files --others --exclude-standard)"

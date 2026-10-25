@@ -1,0 +1,6 @@
+/map/
+/recall/
+/sessions/
+/edit/
+/runs/*/*.lock
+/tool-inventory.json
