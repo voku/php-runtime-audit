@@ -1,0 +1,18 @@
+# Managed by agent-loop: canonical remote-publication command prefixes are forbidden inside the autonomous Codex path.
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "forbidden",
+    justification = "Direct git push is forbidden in Codex; publish outside the autonomous Codex path after explicit human authority.",
+)
+
+prefix_rule(
+    pattern = ["gh", "pr", "create"],
+    decision = "forbidden",
+    justification = "Direct gh pr create is forbidden in Codex; create the pull request outside the autonomous Codex path after explicit human authority.",
+)
+
+prefix_rule(
+    pattern = ["gh", "pr", "merge"],
+    decision = "forbidden",
+    justification = "Direct gh pr merge is forbidden in Codex; merge outside the autonomous Codex path after explicit human authority.",
+)
