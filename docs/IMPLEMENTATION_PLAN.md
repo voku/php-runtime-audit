@@ -22,9 +22,9 @@
 
 ### PRA-2: Dynamic PHP audit skill, guidance mode first
 
-Define `skills/php-runtime-audit/SKILL.md` as a thin selector over **typed audit profiles**, not a monolithic prompt. Provide profiles by task intent (`runtime-patch`, `configuration`, `incident-triage`, `source-review`) and applicability (`apache-mod-php`, `fpm`, `cli`, `container`, distribution family, enabled extensions).
+Define `resources/skills/php-runtime-audit/SKILL.md` as a thin selector over **typed audit profiles**, not a monolithic prompt. Provide profiles by task intent (`runtime-patch`, `configuration`, `incident-triage`, `source-review`) and applicability (`apache-mod-php`, `fpm`, `cli`, `container`, distribution family, enabled extensions).
 
-Read-only facts drive profile selection. Missing facts retain `unknown`. The skill asks for owner authorization before requesting anything that accesses live infrastructure. Source/code auditing is separate from production runtime forensics.
+Read-only facts drive profile selection. Missing facts retain `unknown`. Project the skill using `agent-loop init sync-skills --agent=codex --skills-root=resources/skills` after dry-run inspection. The skill asks for owner authorization before requesting anything that accesses live infrastructure. Source/code auditing is separate from production runtime forensics.
 
 **Exit:** Unit tests prove stable selection, unsupported SAPI handling, no cross-profile leakage, zero unapproved mutations, and bounded agent context. No replay of PHP2Shell exploit payloads.
 
