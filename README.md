@@ -12,7 +12,7 @@ Requires PHP 8.3+ and Composer **on the development host**. Audit targets may us
 composer install --no-interaction --prefer-dist --no-progress
 vendor/bin/agent-loop init scaffold --prefix=PRA --agent=codex
 vendor/bin/agent-loop init doctor
-vendor/bin/agent-loop init host-status --format=json
+vendor/bin/agent-loop init host-status --agent=codex --format=json
 vendor/bin/agent-loop init install-assets --agent=all --dry-run
 ```
 
@@ -20,7 +20,7 @@ Review the dry-run before projecting additional agent assets:
 
 ```bash
 vendor/bin/agent-loop init install-assets --agent=all
-vendor/bin/agent-loop init host-status --format=json
+vendor/bin/agent-loop init host-status --agent=codex --format=json
 git status --short
 ```
 
