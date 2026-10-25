@@ -39,3 +39,11 @@ jobs:
           php -r '$status = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR); if (($status["host"] ?? null) !== "codex" || ($status["selection"] ?? null) === "missing") { fwrite(STDERR, "Explicit Codex host was not selected.\\n"); exit(1); }' "$RUNNER_TEMP/host-status.json"
       - name: Verify generated instructions exist
         run: test -f AGENTS.md && test -d .agent-loop
+      - name: Archive generated bootstrap outputs
+        run: tar -czf "$RUNNER_TEMP/bootstrap-output.tar.gz" composer.lock AGENTS.md .agent-loop .codex
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-output
+          path: ${{ runner.temp }}/bootstrap-output.tar.gz
+          if-no-files-found: error
+          retention-days: 1
