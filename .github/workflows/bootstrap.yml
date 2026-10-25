@@ -1,0 +1,39 @@
+name: agent-loop bootstrap
+
+on:
+  pull_request:
+    paths:
+      - 'composer.json'
+      - 'composer.lock'
+      - '.github/workflows/bootstrap.yml'
+      - 'README.md'
+      - 'docs/IMPLEMENTATION_PLAN.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installed-consumer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up PHP and Composer
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          coverage: none
+      - name: Validate Composer manifest
+        run: composer validate --no-check-publish
+      - name: Resolve and install declared workflow
+        run: composer install --no-interaction --prefer-dist --no-progress
+      - name: Generate canonical project scaffold in isolated CI worktree
+        run: vendor/bin/agent-loop init scaffold --prefix=PRA --agent=codex
+      - name: Diagnose project setup
+        run: vendor/bin/agent-loop init doctor
+      - name: Inspect host integration
+        run: vendor/bin/agent-loop init host-status --format=json
+      - name: Verify generated instructions exist
+        run: test -f AGENTS.md && test -d .agent-loop
