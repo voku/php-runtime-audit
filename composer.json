@@ -8,7 +8,7 @@
     "ext-json": "*"
   },
   "require-dev": {
-    "voku/agent-loop": "^0.20.0"
+    "voku/agent-loop": "^0.20.70"
   },
   "autoload": {
     "psr-4": {
