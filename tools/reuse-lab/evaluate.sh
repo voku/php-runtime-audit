@@ -51,7 +51,7 @@ set +e
 timeout 300s docker run --rm \
   --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
   --user 65534:65534 --pids-limit 128 --memory 1024m --cpus 2 \
-  --tmpfs /tmp:rw,nosuid,nodev,size=384m \
+  --tmpfs /tmp:rw,exec,nosuid,nodev,size=384m \
   -e HOME=/tmp -e GOCACHE=/tmp/go-cache -e GOPATH=/tmp/go \
   -e GOTOOLCHAIN=local -e GOPROXY=off -e GOSUMDB=off \
   -v "$src:/src:ro" -w /src "$container_image" "${command[@]}" \
