@@ -24,3 +24,13 @@ candidate is still uncommitted in another worktree and cannot be independently
 reviewed by GitHub Actions unless it is lawfully published into a reviewable,
 correctly scoped candidate. Do not fabricate a recovery receipt or merge this
 PR as a workaround for missing workflow evidence.
+
+## Remote lock evidence
+
+The guarded Actions execution on 2026-10-26 generated `composer.lock` with
+`voku/agent-loop` **0.20.70**, source commit
+`d5e77d400ebd7bdbd8e5fe875a2e894e2b99f70e`, and confirmed that the
+installed `pipeline recover` command is available. These statements concern
+the published *consumer dependency* only. They are not a PRA-2 candidate
+recovery or review receipt. The follow-up exact-head bootstrap job must still
+pass before this change can be considered ready for independent review.
