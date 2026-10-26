@@ -4,16 +4,30 @@
   "type": "project",
   "license": "MIT",
   "require": {
-    "php": "^8.3",
-    "ext-json": "*"
+    "php": "^8.2",
+    "ext-json": "*",
+    "opis/json-schema": "^2.4"
   },
   "require-dev": {
-    "voku/agent-loop": "^0.20.0"
+    "friendsofphp/php-cs-fixer": "^3.86",
+    "phpstan/phpstan": "^2.1",
+    "phpunit/phpunit": "^11.5",
+    "voku/agent-loop": "^0.20.72"
   },
   "autoload": {
     "psr-4": {
       "voku\\PhpRuntimeAudit\\": "src/"
     }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "voku\\PhpRuntimeAudit\\Tests\\": "tests/"
+    }
+  },
+  "scripts": {
+    "test": "phpunit --display-warnings --fail-on-warning",
+    "analyse": "phpstan analyse --level=max --no-progress src/AuditProfiles bin/php-runtime-audit tests/AuditProfiles",
+    "format-check": "php-cs-fixer fix --dry-run --diff --using-cache=no --rules=@PER-CS src/AuditProfiles && php-cs-fixer fix --dry-run --diff --using-cache=no --rules=@PER-CS tests/AuditProfiles && php-cs-fixer fix --dry-run --diff --using-cache=no --rules=@PER-CS bin/php-runtime-audit"
   },
   "config": {
     "allow-plugins": false,

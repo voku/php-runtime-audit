@@ -1,0 +1,128 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use voku\PhpRuntimeAudit\AuditProfiles\AuditFacts;
+use voku\PhpRuntimeAudit\AuditProfiles\AuditIntent;
+use voku\PhpRuntimeAudit\AuditProfiles\AuditProfileSelector;
+use voku\PhpRuntimeAudit\AuditProfiles\ProfileContextBuilder;
+
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+const MAX_INPUT_BYTES = 65536;
+
+/** Reject duplicate object keys before json_decode silently keeps the last value. */
+function assertJsonObjectKeysAreUnique(string $json): void
+{
+    /** @var list<array{kind: 'object'|'array', keys: array<string, true>}> $contexts */
+    $contexts = [];
+    $length = strlen($json);
+
+    for ($index = 0; $index < $length; ++$index) {
+        $character = $json[$index];
+        if ($character === '"') {
+            $start = $index;
+            $escaped = false;
+            for (++$index; $index < $length; ++$index) {
+                if ($escaped) {
+                    $escaped = false;
+                    continue;
+                }
+                if ($json[$index] === '\\') {
+                    $escaped = true;
+                    continue;
+                }
+                if ($json[$index] === '"') {
+                    break;
+                }
+            }
+
+            if ($index >= $length) {
+                return;
+            }
+
+            $next = $index + 1;
+            while ($next < $length && str_contains(" \t\r\n", $json[$next])) {
+                ++$next;
+            }
+            $lastContext = array_key_last($contexts);
+            if ($lastContext !== null
+                && $contexts[$lastContext]['kind'] === 'object'
+                && ($json[$next] ?? null) === ':') {
+                $key = json_decode(substr($json, $start, $index - $start + 1), false, 512, JSON_THROW_ON_ERROR);
+                if (!is_string($key)) {
+                    throw new RuntimeException('Object keys must be strings.');
+                }
+                if (array_key_exists($key, $contexts[$lastContext]['keys'])) {
+                    throw new RuntimeException('Duplicate keys in JSON objects are not accepted.');
+                }
+                $contexts[$lastContext]['keys'][$key] = true;
+            }
+
+            continue;
+        }
+
+        if ($character === '{') {
+            $contexts[] = ['kind' => 'object', 'keys' => []];
+        } elseif ($character === '[') {
+            $contexts[] = ['kind' => 'array', 'keys' => []];
+        } elseif ($character === '}' || $character === ']') {
+            array_pop($contexts);
+        }
+    }
+}
+
+try {
+    $input = stream_get_contents(STDIN, MAX_INPUT_BYTES + 1);
+    if (!is_string($input) || strlen($input) > MAX_INPUT_BYTES) {
+        throw new RuntimeException(sprintf('Input must not exceed %d bytes.', MAX_INPUT_BYTES));
+    }
+
+    assertJsonObjectKeysAreUnique($input);
+    $payload = json_decode($input, false, 512, JSON_THROW_ON_ERROR);
+    if (!$payload instanceof stdClass) {
+        throw new RuntimeException('Input must be a JSON object.');
+    }
+
+    /** @var array<string, mixed> $payloadFields */
+    $payloadFields = get_object_vars($payload);
+    $unexpectedPayloadFields = array_diff(array_keys($payloadFields), ['intent', 'facts']);
+    if ($unexpectedPayloadFields !== []) {
+        throw new RuntimeException('Input supports only the intent and facts fields.');
+    }
+
+    $intentValue = $payloadFields['intent'] ?? null;
+    if (!is_string($intentValue) || ($intent = AuditIntent::tryFrom($intentValue)) === null) {
+        throw new RuntimeException('Input intent must be runtime-patch, configuration, incident-triage, or source-review.');
+    }
+
+    $factsObject = array_key_exists('facts', $payloadFields) ? $payloadFields['facts'] : new stdClass();
+    if (!$factsObject instanceof stdClass) {
+        throw new RuntimeException('Input facts must be a JSON object.');
+    }
+
+    /** @var array<string, mixed> $factsFields */
+    $factsFields = get_object_vars($factsObject);
+    if (array_key_exists('configuration', $factsFields)) {
+        $configuration = $factsFields['configuration'];
+        if ($configuration instanceof stdClass) {
+            $factsFields['configuration'] = get_object_vars($configuration);
+        } elseif ($configuration !== null) {
+            throw new RuntimeException('Input configuration must be a JSON object or null.');
+        }
+    }
+
+    $selection = (new AuditProfileSelector())->select($intent, AuditFacts::fromArray($factsFields));
+    $result = $selection->toArray();
+    $result['profile_context'] = (new ProfileContextBuilder())->load($selection);
+    $result['context_max_bytes'] = ProfileContextBuilder::DEFAULT_MAX_BYTES;
+
+    fwrite(STDOUT, json_encode(
+        $result,
+        JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+    ) . "\n");
+} catch (Throwable $exception) {
+    fwrite(STDERR, 'php-runtime-audit: ' . $exception->getMessage() . "\n");
+    exit(2);
+}
