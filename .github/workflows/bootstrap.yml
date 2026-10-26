@@ -1,0 +1,48 @@
+name: agent-loop bootstrap
+
+on:
+  pull_request:
+    paths:
+      - 'composer.json'
+      - 'composer.lock'
+      - 'AGENTS.md'
+      - '.agent-loop/**'
+      - '.codex/**'
+      - '.github/workflows/bootstrap.yml'
+      - 'README.md'
+      - 'docs/IMPLEMENTATION_PLAN.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installed-consumer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up PHP and Composer
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          coverage: none
+      - name: Validate Composer manifest
+        run: composer validate --no-check-publish
+      - name: Install the locked workflow
+        run: composer install --no-interaction --prefer-dist --no-progress
+      - name: Regenerate canonical project scaffold
+        run: vendor/bin/agent-loop init scaffold --prefix=PRA --agent=codex
+      - name: Diagnose project setup
+        run: vendor/bin/agent-loop init doctor
+      - name: Synchronize Codex policy
+        run: vendor/bin/agent-loop init sync-policy --agent=codex
+      - name: Inspect host integration
+        run: |
+          vendor/bin/agent-loop init host-status --agent=codex --format=json > "$RUNNER_TEMP/host-status.json"
+          php -r '$status = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR); if (($status["host"] ?? null) !== "codex" || ($status["selection"] ?? null) !== "explicit" || ($status["next_action_kind"] ?? null) !== "none" || ($status["integration"]["policy"] ?? null) !== "ready") { fwrite(STDERR, "Codex project integration is not converged.\n"); exit(1); }' "$RUNNER_TEMP/host-status.json"
+      - name: Check committed projection has no drift
+        run: |
+          git diff --exit-code -- composer.lock AGENTS.md .agent-loop .codex
+          test -z "$(git ls-files --others --exclude-standard)"

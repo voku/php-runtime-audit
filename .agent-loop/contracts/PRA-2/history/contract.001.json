@@ -1,0 +1,58 @@
+{
+    "acceptance_criteria": [
+        "The selector is deterministic for identical typed facts and profile definitions, performs no host mutation or network access, and returns only applicable profiles with a reason and any unknown inputs.",
+        "Profiles cover runtime-patch, configuration, incident-triage, and source-review intent, with applicability for Apache mod_php, PHP-FPM, CLI, containers, distribution/vendor provenance, extensions, and relevant configuration.",
+        "Missing facts remain unknown; unsupported SAPI and unknown vendor backport status are explicit and are not automatically classified as vulnerable or fixed.",
+        "Tests prove stable selection, unsupported-SAPI handling, no cross-profile leakage, Debian PHP-FPM exclusion of Apache checks, no mutation, and bounded selected context.",
+        "The thin skill router loads only selector-returned profile content, keeps patch status distinct from compromise evidence, and never implies that a verified patch proves no compromise.",
+        "The project skill is registered through agent-loop configuration and Codex projection; doctor, host-status, skill validation, and CI detect projection drift."
+    ],
+    "acceptance_observations": [],
+    "approved_at": null,
+    "approved_by": null,
+    "base_commit": "bbb06bce775a3b32aedee573ff71cfd78f70b639",
+    "behavior_anchors": [
+        "Explicit task intent and runtime facts -> deterministic applicable profile IDs -> the skill loads only those profile resources.",
+        "PHP SAPI, runtime, OS/vendor, container, extension, and configuration facts -> applicability true, false, or unknown -> bounded guidance without inferred patch or compromise verdicts."
+    ],
+    "created_at": "2026-10-25T07:58:51+00:00",
+    "goal": "Implement a deterministic, read-only PHP audit-profile selector and thin Codex skill router for guidance-mode audits.",
+    "kind": "task_contract",
+    "non_goals": [
+        "Do not port Cloudflare security-audit-skill wholesale, its broad prompt corpus, multi-agent orchestration, or full audit artifact/report pipeline; adapt only relevant evidence, coverage, independent-verification, and finding-state patterns without claiming endorsement.",
+        "Do not implement the PRA-3 evidence engine, PRA-4 collectors, vendor patch adjudication, PRA-5 remediation, production scans, active exploit payloads, sensitive evidence upload, or the PRA-6 public service."
+    ],
+    "operating_prompt_manifest": "vendor/voku/agent-recall-compiler/resources/skills/agent-recall-consumer/operating-prompts.json",
+    "operating_prompts": [
+        {
+            "arguments": [],
+            "id": "test-driven-development"
+        }
+    ],
+    "planned_by": "codex",
+    "revision": 1,
+    "schema_version": "1.0",
+    "scope": [
+        "resources/skills/php-runtime-audit",
+        "src/AuditProfiles",
+        "bin/php-runtime-audit",
+        "tests/AuditProfiles",
+        "composer.json",
+        "composer.lock",
+        "phpunit.xml",
+        ".github/workflows/bootstrap.yml",
+        ".agent-loop/init.json",
+        ".codex/skills"
+    ],
+    "status": "superseded",
+    "tags": [],
+    "task_id": "PRA-2",
+    "updated_at": "2026-10-25T07:59:37+00:00",
+    "validation": [
+        "composer validate --no-check-publish",
+        "composer test",
+        "vendor/bin/agent-loop init doctor",
+        "vendor/bin/agent-loop init host-status --agent=codex --format=json",
+        "vendor/bin/agent-loop init validate --kind=skills --agent=codex"
+    ]
+}
