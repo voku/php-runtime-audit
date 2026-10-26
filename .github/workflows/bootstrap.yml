@@ -5,6 +5,15 @@ on:
     paths:
       - 'composer.json'
       - 'composer.lock'
+      - 'bin/php-runtime-audit'
+      - 'bin/php-runtime-audit-evidence'
+      - 'bin/php-runtime-audit-inventory'
+      - 'phpunit.xml'
+      - 'resources/skills/**'
+      - 'resources/schemas/**'
+      - 'resources/advisories/**'
+      - 'src/**'
+      - 'tests/**'
       - 'AGENTS.md'
       - '.agent-loop/**'
       - '.codex/**'
@@ -17,32 +26,121 @@ permissions:
   contents: read
 
 jobs:
+  production-smoke-php82:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up PHP 8.2 and Composer
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer:v2
+          coverage: none
+      - name: Validate Composer manifest
+        run: composer validate --no-check-publish
+      - name: Install production dependencies on PHP 8.2
+        run: composer install --no-dev --no-interaction --prefer-dist --no-progress
+      - name: Smoke-test PHP audit-profile selection on PHP 8.2
+        run: |
+          printf '%s\n' '{"intent":"runtime-patch","facts":{"php_version":"8.2.30","sapi":"fpm","distribution":"debian","vendor":"debian"}}' \
+            | php bin/php-runtime-audit \
+            | php -r '$report = json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR); $profileIds = array_column($report["profiles"] ?? [], "id"); if (($report["intent"] ?? null) !== "runtime-patch" || !in_array("runtime-patch", $profileIds, true) || !is_array($report["profile_context"] ?? null)) { fwrite(STDERR, "PHP 8.2 audit-profile smoke check returned an invalid selection.\n"); exit(1); }'
+
   installed-consumer:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ['8.3', '8.4', '8.5']
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up PHP and Composer
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.3'
+          php-version: ${{ matrix.php-version }}
           tools: composer:v2
           coverage: none
       - name: Validate Composer manifest
         run: composer validate --no-check-publish
       - name: Install the locked workflow
         run: composer install --no-interaction --prefer-dist --no-progress
+      - name: Run PHP audit tests
+        run: composer test
+      - name: Run PHPStan at maximum level
+        run: composer analyse
+      - name: Check PHP-CS-Fixer formatting
+        run: composer format-check
       - name: Regenerate canonical project scaffold
         run: vendor/bin/agent-loop init scaffold --prefix=PRA --agent=codex
       - name: Diagnose project setup
         run: vendor/bin/agent-loop init doctor
       - name: Synchronize Codex policy
         run: vendor/bin/agent-loop init sync-policy --agent=codex
+      - name: Install configured Codex workflow assets
+        run: vendor/bin/agent-loop init install-assets --agent=codex
+      - name: Validate projected Codex skills
+        run: vendor/bin/agent-loop init validate --kind=skills --agent=codex
       - name: Inspect host integration
         run: |
           vendor/bin/agent-loop init host-status --agent=codex --format=json > "$RUNNER_TEMP/host-status.json"
-          php -r '$status = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR); if (($status["host"] ?? null) !== "codex" || ($status["selection"] ?? null) !== "explicit" || ($status["next_action_kind"] ?? null) !== "none" || ($status["integration"]["policy"] ?? null) !== "ready") { fwrite(STDERR, "Codex project integration is not converged.\n"); exit(1); }' "$RUNNER_TEMP/host-status.json"
+          php -r '$status = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR); if (($status["host"] ?? null) !== "codex" || ($status["selection"] ?? null) !== "explicit" || ($status["next_action_kind"] ?? null) !== "none" || ($status["integration"]["policy"] ?? null) !== "ready" || ($status["integration"]["skills"] ?? null) !== "ready") { fwrite(STDERR, "Codex project integration is not converged.\n"); exit(1); }' "$RUNNER_TEMP/host-status.json"
       - name: Check committed projection has no drift
         run: |
-          git diff --exit-code -- composer.lock AGENTS.md .agent-loop .codex
+          git diff --exit-code -- composer.lock AGENTS.md .agent-loop .codex ':(exclude).codex/skills/.agent-loop-manifest.json'
+          cat > "$RUNNER_TEMP/check-skill-manifest.php" <<'PHP'
+          <?php
+          declare(strict_types=1);
+
+          $path = '.codex/skills/.agent-loop-manifest.json';
+          $committedJson = shell_exec('git show HEAD:' . escapeshellarg($path));
+          $generatedJson = file_get_contents($path);
+          if (!is_string($committedJson) || !is_string($generatedJson)) {
+              fwrite(STDERR, "Unable to read committed and generated skill manifests.\n");
+              exit(1);
+          }
+
+          $committed = json_decode($committedJson, true, 512, JSON_THROW_ON_ERROR);
+          $generated = json_decode($generatedJson, true, 512, JSON_THROW_ON_ERROR);
+          $config = json_decode(file_get_contents('.agent-loop/init.json'), true, 512, JSON_THROW_ON_ERROR);
+          $skillsRoot = trim($config['paths']['skills_root'] ?? 'resources/skills', '/');
+          if ($skillsRoot === '' || !is_array($committed) || !is_array($generated)) {
+              fwrite(STDERR, "Invalid project skill configuration or manifest.\n");
+              exit(1);
+          }
+
+          $normalize = static function (array $manifest) use ($skillsRoot): array {
+              if (!is_array($manifest['entries'] ?? null)) {
+                  fwrite(STDERR, "Skill manifest entries are missing.\n");
+                  exit(1);
+              }
+              foreach ($manifest['entries'] as &$entry) {
+                  if (($entry['semantic_owner'] ?? null) !== 'project') {
+                      continue;
+                  }
+                  $sourcePath = $entry['source_path'] ?? null;
+                  $suffix = '/' . $skillsRoot . '/' . ($entry['target'] ?? '');
+                  if (!is_string($sourcePath) || !str_ends_with($sourcePath, $suffix)) {
+                      fwrite(STDERR, "Project skill source path does not match the configured skills root.\n");
+                      exit(1);
+                  }
+                  $entry['source_path'] = '<project-local-path>';
+              }
+              unset($entry);
+              return $manifest;
+          };
+          $committed = $normalize($committed);
+          $generated = $normalize($generated);
+
+          if ($committed !== $generated) {
+              fwrite(STDERR, "Generated skill projection differs from the committed manifest.\n");
+              exit(1);
+          }
+          PHP
+          php "$RUNNER_TEMP/check-skill-manifest.php"
           test -z "$(git ls-files --others --exclude-standard)"
