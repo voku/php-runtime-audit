@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "candidates": {
+    "cloudflare": {
+      "repository": "cloudflare/security-audit-skill",
+      "sha": "c1c8a8c1471069fb0e188eeaff69b8e8db6564a8",
+      "license": "MIT",
+      "image": "node:22-alpine",
+      "check": "node --test skills/security-audit/validate-findings.test.cjs skills/security-audit/validate-coverage-ledger.test.cjs",
+      "purpose": "Adapt bounded validators and source-grounded verification, not its complete agent lifecycle."
+    },
+    "php2shell-doctor": {
+      "repository": "andreysheva/php2shell-doctor",
+      "sha": "f961a04ab0f6215e711c9d6516add1a0cbac5a01",
+      "license": "Apache-2.0",
+      "image": "golang:1.23-alpine",
+      "check": "go test -count=1 ./...",
+      "purpose": "Evaluate Go scanner engine and vendor/backport test fixtures."
+    },
+    "p2selfcheck": {
+      "repository": "KnickLighter/p2selfcheck",
+      "sha": "d452e4cc2faa3ceebfe6507e18be7f2eb7663bb9",
+      "license": "MIT",
+      "image": "php:8.3-cli-alpine",
+      "check": "php -l p2selfcheck.php && php p2selfcheck.php",
+      "purpose": "Evaluate safe optional PHP self-check for shared hosting, not proof of patched vendor packages."
+    },
+    "bashclub": {
+      "repository": "bashclub/php2shell-forensic-check",
+      "sha": "c0295eb4af412faf749ee9519a4748ef67f0a4fc",
+      "license": "MIT",
+      "image": "bash:5.2",
+      "check": "bash -n php2shell-forensic-check",
+      "purpose": "Static parse only; no host scan or RMM execution."
+    }
+  }
+}
