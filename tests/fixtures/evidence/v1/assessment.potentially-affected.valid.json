@@ -1,0 +1,15 @@
+{
+  "record_type": "assessment",
+  "schema_version": "1.0",
+  "record_id": "assessment.php.affected.001",
+  "subject_id": "host.example.internal",
+  "assessed_at": "2026-10-25T12:15:00Z",
+  "verdict": "potentially_affected",
+  "patch_status": "potentially_affected",
+  "patch_evidence_ids": ["obs.runtime.001"],
+  "compromise_evidence": {
+    "status": "unknown",
+    "evidence_ids": []
+  },
+  "rationale": "The supplied runtime evidence indicates a potentially affected version; compromise status remains unknown."
+}

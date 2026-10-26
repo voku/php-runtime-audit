@@ -34,6 +34,18 @@ Do not hand-copy generated assets. For governed work, use `vendor/bin/agent-loop
 
 See [the implementation plan](docs/IMPLEMENTATION_PLAN.md) for deliverables and gates.
 
+## Validate local evidence records
+
+PRA-3 adds versioned evidence records for observations, applicability, assessments, coverage and findings. The validator checks one caller-supplied local JSON file against the bundled v1 schema, applies typed-model consistency checks, and writes a structured result to standard output:
+
+```bash
+php bin/php-runtime-audit-evidence validate tests/fixtures/evidence/v1/observation.valid.json
+```
+
+The command accepts only a local file path, rejects URL and UNC paths, reads at most 1 MiB, rejects duplicate JSON object keys, and does not resolve source locators contained in the record. Source freshness is derived only from the captured and current SHA-256 digests already present in the JSON. Missing digest evidence remains `unknown`. An assessment keeps patch status separate from compromise evidence. `verified_fixed` and `potentially_affected` patch statuses require evidence IDs; `none_observed` means no compromise was observed in the supplied evidence and does not mean the host was never compromised.
+
+Schema version `1.0` is stored under `resources/schemas/evidence/v1/`. Unknown record types and schema versions fail closed. The validator does not collect runtime facts, decide vendor backports, or establish whether a host is safe.
+
 ## Security
 
 Never treat `php -v`, response headers or HTTP success as proof of a patched web-facing runtime. No shell pipelines from remote user input. Treat generated instructions and collected logs as untrusted data. Never store SSH credentials in the website.

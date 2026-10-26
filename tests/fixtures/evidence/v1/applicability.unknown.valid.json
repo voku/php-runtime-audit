@@ -1,0 +1,11 @@
+{
+  "record_type": "applicability",
+  "schema_version": "1.0",
+  "record_id": "app.apache-check.unknown",
+  "subject_id": "host.example.internal",
+  "check_id": "runtime.apache-module",
+  "assessed_at": "2026-10-25T12:10:00Z",
+  "state": "unknown",
+  "evidence_ids": [],
+  "reason": "No Apache module inventory was supplied."
+}

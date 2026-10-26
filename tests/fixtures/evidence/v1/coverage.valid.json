@@ -1,0 +1,22 @@
+{
+  "record_type": "coverage",
+  "schema_version": "1.0",
+  "record_id": "coverage.host.001",
+  "recorded_at": "2026-10-25T12:20:00Z",
+  "entries": [
+    {
+      "subject_id": "host.example.internal",
+      "check_id": "runtime.php-version",
+      "status": "attempted",
+      "evidence_ids": ["obs.runtime.001"],
+      "gap": null
+    },
+    {
+      "subject_id": "host.example.internal",
+      "check_id": "runtime.apache-module",
+      "status": "blocked",
+      "evidence_ids": [],
+      "gap": "The host owner did not provide Apache module inventory."
+    }
+  ]
+}

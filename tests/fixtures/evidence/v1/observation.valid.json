@@ -1,0 +1,28 @@
+{
+  "record_type": "observation",
+  "schema_version": "1.0",
+  "observation_id": "obs.runtime.001",
+  "collector_id": "manual.runtime-inventory",
+  "asset_id": "host.example.internal",
+  "observed_at": "2026-10-25T12:00:00Z",
+  "redaction_status": "partial",
+  "sources": [
+    {
+      "source_id": "source.php-version",
+      "kind": "runtime_report",
+      "locator": "php-fpm:pool=www/version-report",
+      "captured_at": "2026-10-25T11:59:00Z",
+      "captured_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "current_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "freshness": "fresh"
+    }
+  ],
+  "facts": [
+    {
+      "fact_id": "fact.php-version",
+      "key": "php.version",
+      "value": "8.3.12",
+      "source_id": "source.php-version"
+    }
+  ]
+}

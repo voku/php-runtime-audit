@@ -1,0 +1,15 @@
+{
+  "record_type": "assessment",
+  "schema_version": "1.0",
+  "record_id": "assessment.patch-without-evidence",
+  "subject_id": "host.example.internal",
+  "assessed_at": "2026-10-25T12:15:00Z",
+  "verdict": "needs_investigation",
+  "patch_status": "verified_fixed",
+  "patch_evidence_ids": [],
+  "compromise_evidence": {
+    "status": "confirmed",
+    "evidence_ids": ["obs.compromise.indicator"]
+  },
+  "rationale": "The overall verdict needs investigation, but the positive patch status has no supporting evidence."
+}

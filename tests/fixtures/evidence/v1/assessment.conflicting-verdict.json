@@ -1,0 +1,12 @@
+{
+  "record_type": "assessment",
+  "schema_version": "1.0",
+  "record_id": "assessment.conflict",
+  "subject_id": "host.example.internal",
+  "assessed_at": "2026-10-25T12:15:00Z",
+  "verdict": "verified_fixed",
+  "patch_status": "potentially_affected",
+  "patch_evidence_ids": ["obs.runtime.001"],
+  "compromise_evidence": {"status": "unknown", "evidence_ids": []},
+  "rationale": "Conflicting patch evidence."
+}

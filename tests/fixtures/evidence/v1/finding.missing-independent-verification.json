@@ -1,0 +1,14 @@
+{
+  "record_type": "finding",
+  "schema_version": "1.0",
+  "finding_id": "finding.material.unverified",
+  "subject_id": "host.example.internal",
+  "created_at": "2026-10-25T12:25:00Z",
+  "status": "confirmed",
+  "kind": "vulnerability",
+  "material": true,
+  "title": "A material finding without a second verification record.",
+  "observed_impact": "Observed impact is recorded separately from potential impact.",
+  "evidence_ids": ["obs.candidate.001"],
+  "independent_verification": null
+}

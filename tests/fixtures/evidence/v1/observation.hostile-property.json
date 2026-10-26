@@ -1,0 +1,12 @@
+{
+  "record_type": "observation",
+  "schema_version": "1.0",
+  "observation_id": "obs.hostile",
+  "collector_id": "manual.collector",
+  "asset_id": "host.example.internal",
+  "observed_at": "2026-10-25T12:00:00Z",
+  "redaction_status": "unknown",
+  "sources": [],
+  "facts": [],
+  "is_safe": true
+}
