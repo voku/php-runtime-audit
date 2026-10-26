@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:voku:php-runtime-audit:evidence:v1:assessment",
+  "title": "PHP Runtime Audit Assessment v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["record_type", "schema_version", "record_id", "subject_id", "assessed_at", "verdict", "patch_status", "patch_evidence_ids", "compromise_evidence", "rationale"],
+  "properties": {
+    "record_type": {"const": "assessment"},
+    "schema_version": {"const": "1.0"},
+    "record_id": {"$ref": "#/$defs/id"},
+    "subject_id": {"$ref": "#/$defs/id"},
+    "assessed_at": {"$ref": "#/$defs/timestamp"},
+    "verdict": {"enum": ["verified_fixed", "potentially_affected", "unknown", "needs_investigation"]},
+    "patch_status": {"enum": ["verified_fixed", "potentially_affected", "unknown"]},
+    "patch_evidence_ids": {"$ref": "#/$defs/evidence_ids"},
+    "compromise_evidence": {"$ref": "#/$defs/compromise"},
+    "rationale": {"type": "string", "minLength": 1, "maxLength": 2000}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"verdict": {"const": "verified_fixed"}}, "required": ["verdict"]},
+      "then": {"properties": {"patch_status": {"const": "verified_fixed"}}}
+    },
+    {
+      "if": {"properties": {"verdict": {"const": "potentially_affected"}}, "required": ["verdict"]},
+      "then": {"properties": {"patch_status": {"const": "potentially_affected"}}}
+    },
+    {
+      "if": {"properties": {"verdict": {"const": "unknown"}}, "required": ["verdict"]},
+      "then": {"properties": {"patch_status": {"const": "unknown"}}}
+    },
+    {
+      "if": {"properties": {"patch_status": {"const": "verified_fixed"}}, "required": ["patch_status"]},
+      "then": {"properties": {"patch_evidence_ids": {"minItems": 1}}}
+    },
+    {
+      "if": {"properties": {"patch_status": {"const": "potentially_affected"}}, "required": ["patch_status"]},
+      "then": {"properties": {"patch_evidence_ids": {"minItems": 1}}}
+    }
+  ],
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "timestamp": {"type": "string", "maxLength": 40, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?(Z|[+-][0-9]{2}:[0-9]{2})$", "format": "date-time"},
+    "evidence_ids": {"type": "array", "maxItems": 512, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "compromise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidence_ids"],
+      "properties": {
+        "status": {"enum": ["none_observed", "suspected", "confirmed", "unknown"]},
+        "evidence_ids": {"$ref": "#/$defs/evidence_ids"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"enum": ["suspected", "confirmed"]}}, "required": ["status"]},
+          "then": {"properties": {"evidence_ids": {"minItems": 1}}}
+        }
+      ]
+    }
+  }
+}

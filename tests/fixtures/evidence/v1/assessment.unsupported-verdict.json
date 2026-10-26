@@ -1,0 +1,12 @@
+{
+  "record_type": "assessment",
+  "schema_version": "1.0",
+  "record_id": "assessment.unsupported",
+  "subject_id": "host.example.internal",
+  "assessed_at": "2026-10-25T12:15:00Z",
+  "verdict": "safe",
+  "patch_status": "unknown",
+  "patch_evidence_ids": [],
+  "compromise_evidence": {"status": "unknown", "evidence_ids": []},
+  "rationale": "This verdict is not part of the contract."
+}

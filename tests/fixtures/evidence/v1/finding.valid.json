@@ -1,0 +1,19 @@
+{
+  "record_type": "finding",
+  "schema_version": "1.0",
+  "finding_id": "finding.runtime-config.001",
+  "subject_id": "host.example.internal",
+  "created_at": "2026-10-25T12:25:00Z",
+  "status": "confirmed",
+  "kind": "configuration",
+  "material": true,
+  "title": "The supplied runtime configuration enables the identified setting.",
+  "observed_impact": "The setting was present in the supplied PHP-FPM configuration evidence.",
+  "evidence_ids": ["obs.runtime-config.001"],
+  "independent_verification": {
+    "verifier_id": "reviewer.secondary",
+    "verified_at": "2026-10-25T12:30:00Z",
+    "method": "Compared the captured configuration evidence with a separate read-only runtime report.",
+    "evidence_ids": ["obs.runtime-report.002"]
+  }
+}

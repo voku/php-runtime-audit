@@ -1,0 +1,28 @@
+{
+  "record_type": "observation",
+  "schema_version": "1.0",
+  "observation_id": "obs.runtime.stale",
+  "collector_id": "manual.runtime-inventory",
+  "asset_id": "host.example.internal",
+  "observed_at": "2026-10-25T12:00:00Z",
+  "redaction_status": "unknown",
+  "sources": [
+    {
+      "source_id": "source.runtime-config",
+      "kind": "file",
+      "locator": "host-local:/etc/php/8.3/fpm/php.ini",
+      "captured_at": "2026-10-25T11:59:00Z",
+      "captured_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "current_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "freshness": "stale"
+    }
+  ],
+  "facts": [
+    {
+      "fact_id": "fact.opcache",
+      "key": "opcache.enable",
+      "value": true,
+      "source_id": "source.runtime-config"
+    }
+  ]
+}
