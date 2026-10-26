@@ -78,4 +78,39 @@ with open(out, 'w', encoding='utf-8') as f:
   f.write('\n')
 print(f"Reuse evaluation {candidate}: {record['status']} (exit {status})")
 PY
+if [[ "$candidate" == "php2shell-doctor" && "$exit_code" -eq 0 ]]; then
+  # Copy the allowlisted Go module into a fresh disposable scratch directory.
+  # Synthetic fixtures require no live PHP processes, network, host mounts or secrets.
+  set +e
+  timeout 180s docker run --rm \
+    --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+    --user 65534:65534 --pids-limit 128 --memory 1024m --cpus 2 \
+    --tmpfs /tmp:rw,exec,nosuid,nodev,size=384m \
+    -e HOME=/tmp -e GOCACHE=/tmp/go-cache -e GOPATH=/tmp/go \
+    -e GOTOOLCHAIN=local -e GOPROXY=off -e GOSUMDB=off \
+    -v "$src:/src:ro" \
+    -v "$root/tools/reuse-lab/fixtures:/lab:ro" \
+    -w /tmp "$container_image" sh -ec '
+      mkdir -p /tmp/upstream/cmd/pra-fixture
+      cp /src/go.mod /tmp/upstream/go.mod
+      cp -R /src/internal /tmp/upstream/internal
+      cp /lab/doctor_fixture.go /tmp/upstream/cmd/pra-fixture/main.go
+      cd /tmp/upstream
+      go run ./cmd/pra-fixture /lab/doctor_cases.json
+    ' >"$result/vendor-worker-fixtures.json" 2>"$result/vendor-worker-fixtures.stderr"
+  fixture_status=$?
+  set -e
+  if [[ "$fixture_status" -ne 0 ]]; then
+    cat "$result/vendor-worker-fixtures.stderr" >&2
+    exit "$fixture_status"
+  fi
+  python3 -m json.tool "$result/vendor-worker-fixtures.json" > /dev/null
+  python3 - "$result/vendor-worker-fixtures.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert d["unexpected_mismatches"] == 0
+assert len(d["observations"]) >= 8
+print("Synthetic vendor/worker fixtures:",len(d["observations"]),"checked; adapter gaps:",d["product_adapter_gaps"])
+PY
+fi
 exit "$exit_code"

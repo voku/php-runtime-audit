@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "official_source": "https://ubuntu.com/security/notices/USN-8948-1",
+  "vendor_cases": [
+    {
+      "id": "jammy-php81-before-fixed",
+      "vendor": "ubuntu",
+      "package": "php8.1-fpm",
+      "version": "8.1.2-1ubuntu2.27",
+      "expected_doctor": "VERIFY_VENDOR",
+      "desired_product": "potentially_affected",
+      "note": "Exact Ubuntu Jammy package revision below fixed .28"
+    },
+    {
+      "id": "jammy-php81-fixed",
+      "vendor": "ubuntu",
+      "package": "php8.1-fpm",
+      "version": "8.1.2-1ubuntu2.28",
+      "expected_doctor": "VERIFY_VENDOR",
+      "desired_product": "installed_package_fixed",
+      "note": "USN-8948-1 fixes .28; active worker still requires separate verification"
+    },
+    {
+      "id": "noble-php83-before-fixed",
+      "vendor": "ubuntu",
+      "package": "php8.3-fpm",
+      "version": "8.3.6-0ubuntu0.24.04.12",
+      "expected_doctor": "VULNERABLE",
+      "desired_product": "potentially_affected"
+    },
+    {
+      "id": "noble-php83-fixed",
+      "vendor": "ubuntu",
+      "package": "php8.3-fpm",
+      "version": "8.3.6-0ubuntu0.24.04.13",
+      "expected_doctor": "PATCHED",
+      "desired_product": "installed_package_fixed"
+    },
+    {
+      "id": "rhel-vendor-unverified",
+      "vendor": "redhat-family",
+      "package": "php",
+      "version": "8.2.13-3.module_el9",
+      "rpm": true,
+      "expected_doctor": "VERIFY_VENDOR",
+      "desired_product": "vendor_evidence_required"
+    }
+  ],
+  "worker_cases": [
+    {
+      "id": "fpm-worker-exe-conflicts-with-installed",
+      "installed_path": "/usr/sbin/php-fpm8.3",
+      "worker_path": "/opt/unverified/php-fpm8.3",
+      "worker_started": "2026-10-20T08:00:00Z",
+      "binary_modified": "2026-10-21T17:00:00Z",
+      "expected_doctor_checked": 0,
+      "expected_doctor_stale": 0,
+      "desired_product": "web_runtime_identity_unknown",
+      "note": "No matching process is not proof of a patched serving worker"
+    },
+    {
+      "id": "fpm-matching-worker-before-binary-update",
+      "installed_path": "/usr/sbin/php-fpm8.3",
+      "worker_path": "/usr/sbin/php-fpm8.3",
+      "worker_started": "2026-10-20T08:00:00Z",
+      "binary_modified": "2026-10-21T17:00:00Z",
+      "expected_doctor_checked": 1,
+      "expected_doctor_stale": 1,
+      "desired_product": "stale_worker_suspected"
+    },
+    {
+      "id": "fpm-matching-worker-after-binary-update",
+      "installed_path": "/usr/sbin/php-fpm8.3",
+      "worker_path": "/usr/sbin/php-fpm8.3",
+      "worker_started": "2026-10-22T08:00:00Z",
+      "binary_modified": "2026-10-21T17:00:00Z",
+      "expected_doctor_checked": 1,
+      "expected_doctor_stale": 0,
+      "desired_product": "web_runtime_requires_attestation",
+      "note": "Start-time comparison alone does not establish a matching binary hash or effective config"
+    },
+    {
+      "id": "fpm-exe-missing",
+      "installed_path": "/usr/sbin/php-fpm8.3",
+      "worker_path": "/usr/sbin/php-fpm8.4",
+      "worker_started": "2026-10-22T08:00:00Z",
+      "binary_modified": "2026-10-21T17:00:00Z",
+      "expected_doctor_checked": 0,
+      "expected_doctor_stale": 0,
+      "desired_product": "web_runtime_identity_unknown"
+    }
+  ]
+}
