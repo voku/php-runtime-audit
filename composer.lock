@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "d4c7eadc5c802ca26873f3860e6e2812",
+    "content-hash": "a41076212275849995df3d4a245b7991",
     "packages": [],
     "packages-dev": [
         {
@@ -1171,16 +1171,16 @@
         },
         {
             "name": "voku/agent-loop",
-            "version": "0.20.69",
+            "version": "0.20.70",
             "source": {
                 "type": "git",
                 "url": "https://github.com/voku/agent-loop.git",
-                "reference": "620f9342b7dc9219a7fa4cbe9ed2b616d06da6de"
+                "reference": "d5e77d400ebd7bdbd8e5fe875a2e894e2b99f70e"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/voku/agent-loop/zipball/620f9342b7dc9219a7fa4cbe9ed2b616d06da6de",
-                "reference": "620f9342b7dc9219a7fa4cbe9ed2b616d06da6de",
+                "url": "https://api.github.com/repos/voku/agent-loop/zipball/d5e77d400ebd7bdbd8e5fe875a2e894e2b99f70e",
+                "reference": "d5e77d400ebd7bdbd8e5fe875a2e894e2b99f70e",
                 "shasum": ""
             },
             "require": {
@@ -1253,7 +1253,7 @@
                     "type": "github"
                 }
             ],
-            "time": "2026-10-25T00:18:24+00:00"
+            "time": "2026-10-25T21:48:39+00:00"
         },
         {
             "name": "voku/agent-map",
