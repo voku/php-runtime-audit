@@ -74,6 +74,24 @@ final class RuntimeWorkerEvidenceTest extends TestCase
         self::assertSame('sha256:' . hash('sha256', $commandLine), $sources[0]['captured_digest']);
     }
 
+    public function test_php85_fpm_worker_is_discovered_without_inventing_vendor_patch_status(): void
+    {
+        $fixtureRoot = dirname(__DIR__) . '/fixtures/runtime/debian-php85-fpm';
+        $inventory = (new RuntimeInventoryCollector(
+            new FixtureProcessRunner($fixtureRoot),
+            $fixtureRoot,
+            '2026-10-25T00:00:00Z',
+        ))->collect();
+
+        self::assertSame('8.5.0', $inventory['workers'][0]['version']);
+        self::assertSame('/usr/sbin/php-fpm8.5', $inventory['workers'][0]['executable_path']);
+        self::assertSame('php8.5-fpm', $inventory['packages'][1]['name']);
+        foreach ((new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load())['assessments'] as $assessment) {
+            self::assertSame('unknown', $assessment['patch_status']);
+            self::assertSame('unknown', $assessment['compromise_evidence']['status']);
+        }
+    }
+
     /** @return iterable<string, array{string|null}> */
     public static function unknownCommandLines(): iterable
     {

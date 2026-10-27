@@ -18,7 +18,10 @@ function usage(): string
 }
 
 try {
-    if (PHP_SAPI !== 'cli' || !isset($argc, $argv) || $argc !== count($argv)) {
+    if (PHP_SAPI !== 'cli'
+        || ini_get('register_argc_argv') !== '1'
+        || !isset($argc, $argv)
+        || $argc !== count($argv)) {
         throw new RuntimeException('CLI argument capture is unavailable; enable register_argc_argv for this command.');
     }
     $fixture = null;

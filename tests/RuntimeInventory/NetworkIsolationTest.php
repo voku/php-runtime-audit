@@ -42,7 +42,7 @@ final class NetworkIsolationTest extends TestCase
     public function test_public_runner_uses_kernel_boundary_or_reports_failure_without_facts(): void
     {
         $command = is_executable('/usr/local/bin/php') ? ProcessCommand::PhpUsrLocalBin : ProcessCommand::PhpUsrBin;
-        $result = new SystemProcessRunner()->run($command);
+        $result = (new SystemProcessRunner())->run($command);
         if (NetworkIsolation::currentNamespaceIsIsolated()) {
             self::assertTrue($result->succeeded(), $result->stderr . ($result->error ?? ''));
             $this->assertPhpPayload($result->stdout);
