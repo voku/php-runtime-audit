@@ -48,6 +48,38 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertStringContainsString('Runtime: 8.2.34.', $assessment['CVE-2026-109618']['rationale']);
     }
 
+    public function test_cli_target_evidence_cites_its_own_runtime_fact_not_a_neighboring_one(): void
+    {
+        [$inventory, $evaluation] = $this->evaluate('debian-fpm');
+        $cliRuntime = $inventory['runtimes'][0];
+        self::assertSame('cli', $cliRuntime['kind']);
+
+        $ownVersionFact = null;
+        foreach ($inventory['facts'] as $fact) {
+            if ($fact['key'] === 'runtime.cli.1.version') {
+                $ownVersionFact = $fact;
+            }
+        }
+        self::assertNotNull($ownVersionFact, 'The collector must record a runtime.cli.1.version fact for the single discovered CLI runtime.');
+        self::assertSame($cliRuntime['version'], $ownVersionFact['value']);
+
+        $basisFact = null;
+        foreach ($evaluation['facts'] as $fact) {
+            if (str_starts_with($fact['key'], 'advisory.')
+                && str_ends_with($fact['key'], '.' . $cliRuntime['id'] . '.assessment_basis')) {
+                $basisFact = $fact;
+                break;
+            }
+        }
+        self::assertNotNull($basisFact, 'The CLI target must have an assessment_basis fact.');
+        self::assertIsArray($basisFact['value']);
+        self::assertSame(
+            $ownVersionFact['fact_id'],
+            $basisFact['value']['runtime_fact_id'],
+            'A CLI target must cite its own runtime.cli.N.version fact as evidence, not a neighboring runtime index.',
+        );
+    }
+
     public function test_unknown_rhel_family_backport_status_stays_unknown(): void
     {
         [, $evaluation] = $this->evaluate('rocky9-fpm');

@@ -243,7 +243,7 @@ final class AdvisoryEvaluator
                 'id' => $runtime['id'], 'subject_id' => $runtime['id'], 'kind' => 'cli',
                 'version' => $runtime['version'], 'package' => $packageName,
                 'package_version' => $package['version'] ?? null,
-                'source_fact_id' => $this->factId($facts, 'runtime.cli.' . ($runtimeIndex + 1) . '.version'),
+                'source_fact_id' => $this->factId($facts, 'runtime.cli.' . $runtimeIndex . '.version'),
                 'package_fact_id' => $package['fact_id'] ?? null, 'deleted' => false,
                 'provenance_verified' => false, 'provenance_fact_id' => null,
             ];
