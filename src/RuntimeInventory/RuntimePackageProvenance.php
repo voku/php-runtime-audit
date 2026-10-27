@@ -193,7 +193,10 @@ final class RuntimePackageProvenance
             if (($fields['Status'] ?? null) !== 'install ok installed') {
                 continue;
             }
-            $name = $fields['Package'];
+            $name = $fields['Package'] ?? null;
+            if ($name === null) {
+                continue;
+            }
             $matching = array_values(array_filter($packages, static fn(array $package): bool => $package['name'] === $name));
             if (count($matching) !== 1 || $matching[0]['version'] !== ($fields['Version'] ?? null)) {
                 continue;
