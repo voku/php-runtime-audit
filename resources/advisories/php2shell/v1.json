@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.0",
+  "as_of": "2026-10-25",
+  "advisories": [
+    {
+      "cve": "CVE-2026-109618",
+      "title": "PHP request parsing out-of-memory corruption",
+      "source_url": "https://www.php.net/archive/2026.php#2026-10-21-5",
+      "revision": "2026-10-21",
+      "fixed_upstream": {"8.2": "8.2.35", "8.3": "8.3.36", "8.4": "8.4.27", "8.5": "8.5.12"},
+      "mitigations": [
+        {"setting": "memory_limit", "value": "-1", "effect": "partial", "source_url": "https://www.php.net/archive/2026.php#2026-10-21-5"},
+        {"setting": "post_max_size", "value": "8M or 32M based on upload requirements", "effect": "partial", "source_url": "https://www.php.net/archive/2026.php#2026-10-21-5"}
+      ],
+      "vendor_rules": [
+        {"vendor": "debian", "release": "bookworm", "package_names": ["php8.2-cli", "php8.2-fpm", "php8.2-cgi", "libapache2-mod-php8.2"], "fixed_version": "8.2.35-1~deb12u1", "source_url": "https://security-tracker.debian.org/tracker/CVE-2026-109618", "revision": "2026-10-25"},
+        {"vendor": "debian", "release": "trixie", "package_names": ["php8.4-cli", "php8.4-fpm", "php8.4-cgi", "libapache2-mod-php8.4"], "fixed_version": "8.4.27-1~deb13u1", "source_url": "https://security-tracker.debian.org/tracker/CVE-2026-109618", "revision": "2026-10-25"},
+        {"vendor": "ubuntu", "release": "noble", "package_names": ["php8.3-cli", "php8.3-fpm", "php8.3-cgi", "libapache2-mod-php8.3"], "fixed_version": "8.3.6-0ubuntu0.24.04.13", "source_url": "https://ubuntu.com/security/notices/USN-8948-1", "revision": "2026-10-21"},
+        {"vendor": "ubuntu", "release": "resolute", "package_names": ["php8.5-cli", "php8.5-fpm", "php8.5-cgi", "libapache2-mod-php8.5"], "fixed_version": "8.5.4-0ubuntu1.5", "source_url": "https://ubuntu.com/security/notices/USN-8948-1", "revision": "2026-10-21"},
+        {"vendor": "ubuntu", "release": "stonking", "package_names": ["php8.5-cli", "php8.5-fpm", "php8.5-cgi", "libapache2-mod-php8.5"], "fixed_version": "8.5.9-0ubuntu2.1", "source_url": "https://ubuntu.com/security/notices/USN-8948-1", "revision": "2026-10-21"},
+        {"vendor": "rhel", "release": "10", "package_names": ["php", "php-cli", "php-fpm", "php-common"], "fixed_version": "8.3.36-1.el10_2", "source_url": "https://access.redhat.com/errata/RHSA-2026:87070", "revision": "2026-10-21"},
+        {"vendor": "rhel", "release": "10", "package_names": ["php8.4", "php8.4-cli", "php8.4-fpm", "php8.4-common"], "fixed_version": "8.4.27-1.el10_2", "source_url": "https://access.redhat.com/errata/RHSA-2026:87071", "revision": "2026-10-21"},
+        {"vendor": "alpine", "release": "3.21", "package_names": ["php82", "php82-fpm"], "fixed_version": "8.2.35-r0", "source_url": "https://secdb.alpinelinux.org/v3.21/community.json", "revision": "2026-10-22"},
+        {"vendor": "alpine", "release": "3.22", "package_names": ["php82", "php82-fpm"], "fixed_version": "8.2.35-r0", "source_url": "https://secdb.alpinelinux.org/v3.22/community.json", "revision": "2026-10-23"}
+      ]
+    },
+    {
+      "cve": "CVE-2026-109619",
+      "title": "PHP stale request-owned global state",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp",
+      "revision": "2026-10-21",
+      "fixed_upstream": {"8.2": "8.2.35", "8.3": "8.3.36", "8.4": "8.4.27", "8.5": "8.5.12"},
+      "mitigations": [
+        {"setting": "session.upload_progress.enabled", "value": "0", "effect": "partial", "source_url": "https://www.php.net/archive/2026.php#2026-10-21-5"},
+        {"setting": "fatal_error_backtraces", "value": "0 on PHP 8.5", "effect": "partial", "source_url": "https://www.php.net/archive/2026.php#2026-10-21-5"}
+      ],
+      "vendor_rules": [
+        {"vendor": "debian", "release": "bookworm", "package_names": ["php8.2-cli", "php8.2-fpm", "php8.2-cgi", "libapache2-mod-php8.2"], "fixed_version": "8.2.35-1~deb12u1", "source_url": "https://security-tracker.debian.org/tracker/CVE-2026-109619", "revision": "2026-10-25"},
+        {"vendor": "debian", "release": "trixie", "package_names": ["php8.4-cli", "php8.4-fpm", "php8.4-cgi", "libapache2-mod-php8.4"], "fixed_version": "8.4.27-1~deb13u1", "source_url": "https://security-tracker.debian.org/tracker/CVE-2026-109619", "revision": "2026-10-25"},
+        {"vendor": "ubuntu", "release": "noble", "package_names": ["php8.3-cli", "php8.3-fpm", "php8.3-cgi", "libapache2-mod-php8.3"], "fixed_version": "8.3.6-0ubuntu0.24.04.13", "source_url": "https://ubuntu.com/security/notices/USN-8948-1", "revision": "2026-10-21"},
+        {"vendor": "ubuntu", "release": "resolute", "package_names": ["php8.5-cli", "php8.5-fpm", "php8.5-cgi", "libapache2-mod-php8.5"], "fixed_version": "8.5.4-0ubuntu1.5", "source_url": "https://ubuntu.com/security/notices/USN-8948-1", "revision": "2026-10-21"},
+        {"vendor": "ubuntu", "release": "stonking", "package_names": ["php8.5-cli", "php8.5-fpm", "php8.5-cgi", "libapache2-mod-php8.5"], "fixed_version": "8.5.9-0ubuntu2.1", "source_url": "https://ubuntu.com/security/notices/USN-8948-1", "revision": "2026-10-21"},
+        {"vendor": "rhel", "release": "10", "package_names": ["php", "php-cli", "php-fpm", "php-common"], "fixed_version": "8.3.36-1.el10_2", "source_url": "https://access.redhat.com/errata/RHSA-2026:87070", "revision": "2026-10-21"},
+        {"vendor": "rhel", "release": "10", "package_names": ["php8.4", "php8.4-cli", "php8.4-fpm", "php8.4-common"], "fixed_version": "8.4.27-1.el10_2", "source_url": "https://access.redhat.com/errata/RHSA-2026:87071", "revision": "2026-10-21"},
+        {"vendor": "alpine", "release": "3.21", "package_names": ["php82", "php82-fpm"], "fixed_version": "8.2.35-r0", "source_url": "https://secdb.alpinelinux.org/v3.21/community.json", "revision": "2026-10-22"},
+        {"vendor": "alpine", "release": "3.22", "package_names": ["php82", "php82-fpm"], "fixed_version": "8.2.35-r0", "source_url": "https://secdb.alpinelinux.org/v3.22/community.json", "revision": "2026-10-23"}
+      ]
+    },
+    {
+      "cve": "CVE-2026-115560",
+      "title": "PHP session upload progress and serialization handler interaction",
+      "source_url": "https://www.php.net/archive/2026.php#2026-10-23-1",
+      "revision": "2026-10-23",
+      "fixed_upstream": {},
+      "mitigations": [
+        {"setting": "session.upload_progress.enabled", "value": "0", "effect": "blocks-described-vector", "source_url": "https://www.php.net/archive/2026.php#2026-10-23-1"}
+      ],
+      "vendor_rules": []
+    }
+  ]
+}

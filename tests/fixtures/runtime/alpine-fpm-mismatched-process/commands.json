@@ -1,0 +1,7 @@
+{
+  "commands": {
+    "php-usr-bin": {"exit_code": 0, "stdout": "{\"version\":\"8.2.35\",\"sapi\":\"cli\",\"extensions\":[\"Core\",\"json\"]}"},
+    "fpm-82": {"exit_code": 0, "stdout": "PHP 8.2.35 (fpm-fcgi) (built: fixture)"},
+    "apk-packages": {"exit_code": 0, "stdout": "php82-8.2.35-r0\nphp82-fpm-8.2.35-r0\n"}
+  }
+}

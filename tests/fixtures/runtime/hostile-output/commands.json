@@ -1,0 +1,6 @@
+{
+  "commands": {
+    "php-usr-bin": {"exit_code": 0, "stdout": "{\"version\":\"8.2.35\",\"version\":\"8.2.34\",\"sapi\":\"cli\",\"extensions\":[\"Core\"]}"},
+    "fpm-8.2": {"exit_code": 0, "stdout": "PHP 8.2.35 ; (fpm-fcgi) (built: fixture)"}
+  }
+}

@@ -382,6 +382,30 @@ final class EvidenceValidatorTest extends TestCase
         self::assertStringContainsString('network paths', $result['errors'][0]);
     }
 
+    public function test_cli_handles_register_argc_argv_disabled(): void
+    {
+        $cli = dirname(__DIR__, 2) . '/bin/php-runtime-audit-evidence';
+        $process = proc_open(
+            [PHP_BINARY, '-d', 'register_argc_argv=0', $cli],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            dirname(__DIR__, 2),
+        );
+        self::assertIsResource($process);
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        self::assertSame('', $stderr);
+        self::assertSame(2, $exitCode);
+        $result = $this->decodeObject((string) $stdout);
+        self::assertFalse($result['valid']);
+        self::assertSame(['Usage: php bin/php-runtime-audit-evidence validate <local-json-file>'], $result['errors']);
+    }
+
     /** @return array<string, mixed> */
     private function fixtureData(string $name): array
     {

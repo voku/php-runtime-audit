@@ -1,0 +1,1 @@
+Unit test evidence only: inert ELF-shaped bytes, simulated dpkg metadata and proc symlink. Nothing here is vendor-supplied, signed, or executable PHP. Matching MD5 metadata demonstrates the local package database trust boundary, not independent vendor authenticity.

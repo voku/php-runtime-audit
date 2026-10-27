@@ -1,0 +1,7 @@
+{
+  "commands": {
+    "php-usr-bin": {"exit_code": 0, "stdout": "{\"version\":\"8.3.35\",\"sapi\":\"cli\",\"extensions\":[\"Core\",\"json\"]}"},
+    "fpm-usr-sbin": {"exit_code": 0, "stdout": "PHP 8.3.35 (fpm-fcgi) (built: fixture)"},
+    "rpm-packages": {"exit_code": 0, "stdout": "php\t8.3.35-1.el9_6\tx86_64\nphp-fpm\t8.3.35-1.el9_6\tx86_64\n"}
+  }
+}
