@@ -51,6 +51,16 @@ Patch results use four verdicts: `verified_fixed`, `potentially_affected`, `unkn
 
 This version covers Linux process/package inventory and PHP2Shell advisories CVE-2026-109618, CVE-2026-109619, and CVE-2026-115560. It is not a general security certification. Review the evidence and source revisions before making operational decisions.
 
+## Generate a reviewable remediation plan
+
+PRA-5 turns a runtime audit report into reviewable remediation proposals, as both machine-readable JSON and a human-readable `REPORT.md`:
+
+```bash
+php bin/php-runtime-audit-inventory | php bin/php-runtime-audit-report --report REPORT.md > remediation-plan.json
+```
+
+The command is a pure transformation of the report already produced by `php bin/php-runtime-audit-inventory`: it collects no new evidence, runs no commands, and never restarts, installs, or modifies anything. Every proposal requires explicit human approval and states its own prerequisites, risk, rollback and verification steps; `requires_human_approval` is always `true` and cannot be set otherwise. A `verified_fixed` verdict that cites no evidence present in the report is flagged rather than reported as a clean result, and conflicting assessments for the same subject are both kept visible rather than merged. The input is treated as untrusted: malformed or unresolvable records are skipped and recorded as warnings instead of producing a guessed proposal, and all generated text is bounded and stripped of control characters before it reaches the Markdown report.
+
 ## Validate local evidence records
 
 PRA-3 adds versioned evidence records for observations, applicability, assessments, coverage and findings. The validator checks one caller-supplied local JSON file against the bundled v1 schema, applies typed-model consistency checks, and writes a structured result to standard output:

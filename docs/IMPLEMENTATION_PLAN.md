@@ -2,7 +2,7 @@
 
 ## Current delivery status
 
-PRA-1 bootstrap assets are present, but PRA-1 remains `legacy_inferred` and incomplete: it has no Contract, governed Run, or review record. PRA-2 is complete with verification passed and review `ok`. PRA-3 is complete with verification passed and review `warn`; its historical warning remains recorded. PRA-4-MAINLINE is complete with verification passed and review `warn`; its recorded limitation is fixture-tested PHP 8.5 parity without a real PHP 8.5 container smoke. PRA-4-MULTIRUNTIME extends inventory across legacy and side-by-side PHP installations and must be marked complete only by its governed workflow. The earlier PRA-4 run remains preserved with verification passed and review `warn`. Local and Public MVPs have separate release gates; neither is declared released here.
+PRA-1 bootstrap assets are present, but PRA-1 remains `legacy_inferred` and incomplete: it has no Contract, governed Run, or review record. PRA-2 is complete with verification passed and review `ok`. PRA-3 is complete with verification passed and review `warn`; its historical warning remains recorded. PRA-4-MAINLINE is complete with verification passed and review `warn`; its recorded limitation was fixture-tested PHP 8.5 parity without a real PHP 8.5 container smoke. PRA-4-MULTIRUNTIME (legacy and side-by-side PHP installation inventory) merged to `main`, and the PHP 8.5 real-worker parity limitation above was subsequently closed with real Docker-based FPM and Apache evidence on exact-head CI. Both merges proceeded on direct engineering evidence (code review, tests, exact-head CI) rather than through a completed canonical agent-loop Run: that governed workflow's tracked state (Contract, Run, session) was confirmed lost and could not be recovered in the environment that continued this work, so neither merge carries a governed-workflow acceptance record, and this is recorded here rather than implied. The earlier PRA-4 run remains preserved with verification passed and review `warn`. Local and Public MVPs have separate release gates; neither is declared released here.
 
 - **Local MVP:** verified local runtime and patch checks, vendor-backport evidence, three-valued applicability, and reviewable environment-specific remediation instructions. PRA-1, PRA-2, PRA-3, PRA-4, and PRA-5 must complete their canonical workflows.
 - **Public MVP:** verified Local MVP plus PRA-7A documentation and PRA-7B reproducible, independently security-reviewed downloadable bundles.
@@ -59,13 +59,15 @@ Use `proc_open` only with fixed allowlisted argv when required, with timeouts an
 
 **Exit:** Disposable Debian/Ubuntu, RHEL-family, Alpine and container fixtures, including installed-vs-running mismatch and vendor-backport cases; PHPStan max, PHPUnit, PHP-CS-Fixer and security review.
 
-### PRA-5: Reviewable remediation plans (Local MVP gate)
+### PRA-5: Reviewable remediation plans (Local MVP gate) (implemented; not governed-workflow accepted)
 
 Generate local JSON plus a readable `REPORT.md`. A proposed patch plan includes prerequisites, maintenance window, exact package/vendor provenance, rollback and independent post-fix verification; **no automatic apply**. The LLM handoff states what is unverified and includes mandatory human approval before changes, service restarts or log exports.
 
 Full incident triage is deferred to PRA-4C; it is not a prerequisite for these remediation instructions.
 
 **Exit:** No fabricated green verdict, no command injection, redaction tests, provenance checks and approval tests.
+
+**Status:** `src/Remediation/` and `bin/php-runtime-audit-report` implement this as a pure transformation of an already-generated runtime audit report (JSON in, JSON plan plus `REPORT.md` out), with `requires_human_approval` hardcoded `true` on every proposal and no code path that executes, restarts, installs, or modifies anything. Hostile-input tests cover malformed/missing-field assessment records, evidence_ids that do not resolve to a real fact (dropped with a warning, never fabricated), conflicting duplicate assessments for one subject (both kept visible), a `verified_fixed` verdict with no citable evidence (flagged rather than trusted), and untrusted rationale/subject text that cannot alter Markdown structure, inject control bytes, or appear inside the fixed action-instruction template. As with PRA-4-MULTIRUNTIME above, this was built and verified on direct engineering evidence (tests, exact-head CI) rather than through a completed canonical agent-loop Run, for the same recorded reason.
 
 ### PRA-4B / PRA-4C: Separate follow-up Contracts
 
