@@ -50,9 +50,26 @@ try {
         if (preg_match('/^worker\.([0-9]+)\.kind$/D', $key, $matches) === 1 && $value === $argv[2]) {
             $workerSeen = true;
             if ($expectedVersionPrefix !== null) {
-                $version = $facts['worker.' . $matches[1] . '.version'] ?? null;
-                $workerVersionMatchesExpectedPrefix = $workerVersionMatchesExpectedPrefix
-                    || (is_string($version) && str_starts_with($version, $expectedVersionPrefix));
+                if ($argv[2] === 'fpm') {
+                    // FPM's own binary is invoked directly, so the collector records a full
+                    // dotted version (e.g. "8.2.35") in worker.N.version.
+                    $version = $facts['worker.' . $matches[1] . '.version'] ?? null;
+                    $workerVersionMatchesExpectedPrefix = $workerVersionMatchesExpectedPrefix
+                        || (is_string($version) && str_starts_with($version, $expectedVersionPrefix));
+                } else {
+                    // A live Apache process cannot be asked its own PHP version the way FPM's
+                    // binary can; worker.N.version is intentionally left null for apache workers
+                    // (RuntimeInventoryCollector only computes $versionCandidate for kind=fpm).
+                    // The only real evidence of which PHP branch is loaded is the mod_php
+                    // module's own filename, e.g. libphp8.4.so, in worker.N.apache_php_modules.
+                    $modules = $facts['worker.' . $matches[1] . '.apache_php_modules'] ?? null;
+                    if (is_array($modules)) {
+                        foreach ($modules as $modulePath) {
+                            $workerVersionMatchesExpectedPrefix = $workerVersionMatchesExpectedPrefix
+                                || (is_string($modulePath) && str_contains(basename($modulePath), 'libphp' . $expectedVersionPrefix . '.'));
+                        }
+                    }
+                }
             }
         }
         $cliSeen = $cliSeen || (preg_match('/^runtime\.cli\.[0-9]+\.version$/D', $key) === 1 && is_string($value));
@@ -63,7 +80,7 @@ try {
     }
     if (!$workerVersionMatchesExpectedPrefix) {
         throw new RuntimeException(sprintf(
-            'Expected the audited %s worker version to start with %s; the inventory recorded a different version. '
+            'Expected the audited %s worker to report version/module evidence for %s; the inventory recorded something else. '
             . 'A passing disposable check must prove the pinned image version was actually audited, not merely that some worker ran.',
             $argv[2],
             $expectedVersionPrefix,
