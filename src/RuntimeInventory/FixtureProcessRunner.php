@@ -34,10 +34,9 @@ final class FixtureProcessRunner implements ProcessRunner
         if (!is_array($data) || array_diff(array_keys($data), ['commands']) !== [] || !is_array($data['commands'] ?? null)) {
             throw new InvalidArgumentException('Fixture command data must contain only a commands object.');
         }
-        $allowedCommands = array_map(static fn(ProcessCommand $command): string => $command->value, ProcessCommand::cases());
         $results = [];
         foreach ($data['commands'] as $name => $result) {
-            if (!is_string($name) || !in_array($name, $allowedCommands, true) || !is_array($result)) {
+            if (!is_string($name) || !self::isAllowedCommandId($name) || !is_array($result)) {
                 throw new InvalidArgumentException('Fixture commands must name only allowlisted commands with object results.');
             }
             $results[$name] = $result;
@@ -45,9 +44,9 @@ final class FixtureProcessRunner implements ProcessRunner
         $this->results = $results;
     }
 
-    public function run(ProcessCommand $command): ProcessResult
+    public function run(ProcessCommandSpec $command): ProcessResult
     {
-        $result = $this->results[$command->value] ?? null;
+        $result = $this->results[$command->id()] ?? null;
         if (!is_array($result)
             || array_diff(array_keys($result), ['exit_code', 'stdout', 'stderr', 'timed_out', 'truncated', 'error']) !== []
             || !is_string($result['stdout'] ?? null)) {
@@ -74,5 +73,16 @@ final class FixtureProcessRunner implements ProcessRunner
             $truncated || strlen($result['stdout']) > $command->outputLimitBytes() || strlen($stderr) > $command->outputLimitBytes(),
             $error,
         );
+    }
+
+    private static function isAllowedCommandId(string $id): bool
+    {
+        foreach (ProcessCommand::cases() as $command) {
+            if ($command->id() === $id) {
+                return true;
+            }
+        }
+
+        return preg_match('/\Adiscovered-(?:cli|fpm)-[a-f0-9]{24}\z/', $id) === 1;
     }
 }

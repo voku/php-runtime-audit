@@ -9,7 +9,7 @@ use Throwable;
 /** Executes only allowlisted commands with bounded time/output and kernel network isolation. */
 final class SystemProcessRunner implements ProcessRunner
 {
-    public function run(ProcessCommand $command): ProcessResult
+    public function run(ProcessCommandSpec $command): ProcessResult
     {
         $argv = $command->argv();
         if (!is_executable($command->executablePath())) {

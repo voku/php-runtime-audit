@@ -6,6 +6,7 @@ namespace voku\PhpRuntimeAudit\Tests\RuntimeInventory;
 
 use PHPUnit\Framework\TestCase;
 use voku\PhpRuntimeAudit\RuntimeInventory\FixtureProcessRunner;
+use voku\PhpRuntimeAudit\RuntimeInventory\DiscoveredPhpCommand;
 use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
 
 /** @phpstan-import-type RuntimeInventory from RuntimeInventoryCollector */
@@ -32,6 +33,189 @@ final class RuntimeInventoryCollectorTest extends TestCase
             ['/etc/php/8.2/fpm/php.ini'],
             $inventory['configuration']['session.upload_progress.enabled']['files'],
         );
+    }
+
+    public function test_legacy_cli_installations_are_discovered_as_separate_versioned_runtimes(): void
+    {
+        $root = sys_get_temp_dir() . '/pra-legacy-cli-' . bin2hex(random_bytes(6));
+        mkdir($root . '/usr/bin', 0777, true);
+        mkdir($root . '/var/lib/dpkg', 0777, true);
+        file_put_contents($root . '/usr/bin/php5.6', 'fixture PHP 5.6');
+        file_put_contents($root . '/usr/bin/php7.4', 'fixture PHP 7.4');
+        file_put_contents($root . '/usr/bin/dpkg-query', 'fixture package query');
+        file_put_contents($root . '/var/lib/dpkg/status', "Package: php5.6-cli\nStatus: install ok installed\n\nPackage: php7.4-cli\nStatus: install ok installed\n");
+        $php56 = DiscoveredPhpCommand::fromPath('/usr/bin/php5.6', 'cli')->id();
+        $php74 = DiscoveredPhpCommand::fromPath('/usr/bin/php7.4', 'cli')->id();
+        file_put_contents($root . '/commands.json', json_encode([
+            'commands' => [
+                $php56 => ['exit_code' => 0, 'stdout' => '{"version":"5.6.40","sapi":"cli","extensions":[]}'],
+                $php74 => ['exit_code' => 0, 'stdout' => '{"version":"7.4.33","sapi":"cli","extensions":[]}'],
+                'dpkg-packages' => ['exit_code' => 0, 'stdout' => "php5.6-cli\t5.6.40-0+deb.sury.org+1\nphp7.4-cli\t7.4.33-1+deb.sury.org+1\n"],
+            ],
+        ], JSON_THROW_ON_ERROR));
+        symlink('/usr/bin/php5.6', $root . '/usr/bin/php8.1');
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-27T00:00:00Z',
+            ))->collect();
+
+            $runtimes = [];
+            foreach ($inventory['runtimes'] as $runtime) {
+                $runtimes[$runtime['binary_path']] = $runtime;
+            }
+            self::assertSame('5.6.40', $runtimes['/usr/bin/php5.6']['version']);
+            self::assertSame('7.4.33', $runtimes['/usr/bin/php7.4']['version']);
+            self::assertNotSame($runtimes['/usr/bin/php5.6']['id'], $runtimes['/usr/bin/php7.4']['id']);
+            self::assertCount(2, $inventory['packages']);
+            self::assertTrue($this->factValue($inventory, 'runtime.discovery.incomplete'));
+            self::assertSame('blocked', $inventory['coverage'][4]['status']);
+            self::assertStringContainsString('safely', is_string($inventory['coverage'][4]['gap']) ? $inventory['coverage'][4]['gap'] : '');
+        } finally {
+            $this->removeTemporaryTree($root);
+        }
+    }
+
+    public function test_versioned_cli_candidate_in_custom_path_is_recorded_without_execution(): void
+    {
+        $root = sys_get_temp_dir() . '/pra-path-cli-' . bin2hex(random_bytes(6));
+        mkdir($root . '/opt/php74/bin', 0777, true);
+        file_put_contents($root . '/opt/php74/bin/php7.4', 'fixture PHP 7.4');
+        file_put_contents($root . '/commands.json', '{"commands":{}}');
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-27T00:00:00Z',
+                '/opt/php74/bin',
+            ))->collect();
+
+            $candidate = $this->factValue($inventory, 'runtime.discovery.path_candidate.1');
+            self::assertSame([], $inventory['runtimes']);
+            self::assertIsArray($candidate);
+            self::assertSame('/opt/php74/bin/php7.4', $candidate['path']);
+            self::assertSame('7.4', $candidate['version_hint']);
+            self::assertSame('not_attempted_untrusted_path', $candidate['execution']);
+            self::assertTrue($this->factValue($inventory, 'runtime.discovery.incomplete'));
+            self::assertSame('blocked', $inventory['coverage'][4]['status']);
+        } finally {
+            unlink($root . '/commands.json');
+            unlink($root . '/opt/php74/bin/php7.4');
+            rmdir($root . '/opt/php74/bin');
+            rmdir($root . '/opt/php74');
+            rmdir($root . '/opt');
+            rmdir($root);
+        }
+    }
+
+    public function test_relative_path_entry_is_rejected_and_reported_as_a_discovery_gap(): void
+    {
+        $root = sys_get_temp_dir() . '/pra-path-invalid-' . bin2hex(random_bytes(6));
+        mkdir($root . '/opt/php74/bin', 0777, true);
+        file_put_contents($root . '/opt/php74/bin/php7.4', 'must not be executed');
+        file_put_contents($root . '/commands.json', '{"commands":{}}');
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-27T00:00:00Z',
+                '../opt/php74/bin',
+            ))->collect();
+
+            self::assertSame([], $inventory['runtimes']);
+            self::assertTrue($this->factValue($inventory, 'runtime.discovery.incomplete'));
+            self::assertSame('blocked', $inventory["coverage"][4]['status']);
+        } finally {
+            unlink($root . '/commands.json');
+            unlink($root . '/opt/php74/bin/php7.4');
+            rmdir($root . '/opt/php74/bin');
+            rmdir($root . '/opt/php74');
+            rmdir($root . '/opt');
+            rmdir($root);
+        }
+    }
+
+    public function test_package_record_limit_marks_inventory_coverage_incomplete(): void
+    {
+        $root = sys_get_temp_dir() . '/pra-package-cap-' . bin2hex(random_bytes(6));
+        mkdir($root . '/usr/bin', 0777, true);
+        mkdir($root . '/var/lib/dpkg', 0777, true);
+        file_put_contents($root . '/usr/bin/dpkg-query', 'fixture package query');
+        file_put_contents($root . '/var/lib/dpkg/status', 'fixture package status');
+        $lines = [];
+        for ($index = 0; $index < 257; ++$index) {
+            $lines[] = 'php' . $index . '-cli' . "\t" . '7.4.33-' . $index;
+        }
+        file_put_contents($root . '/commands.json', json_encode([
+            'commands' => ['dpkg-packages' => ['exit_code' => 0, 'stdout' => implode("\n", $lines) . "\n"]],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-27T00:00:00Z',
+                '',
+            ))->collect();
+            $packageCoverage = array_values(array_filter(
+                $inventory['coverage'],
+                static fn(array $coverage): bool => $coverage['check_id'] === 'runtime.packages',
+            ))[0];
+
+            self::assertCount(256, $inventory['packages']);
+            self::assertSame(257, $this->factValue($inventory, 'packages.inventory_count'));
+            self::assertTrue($this->factValue($inventory, 'packages.truncated'));
+            self::assertSame('blocked', $packageCoverage['status']);
+            self::assertStringContainsString('omitted package subjects remain unknown', $packageCoverage['gap'] ?? '');
+        } finally {
+            unlink($root . '/commands.json');
+            unlink($root . '/var/lib/dpkg/status');
+            unlink($root . '/usr/bin/dpkg-query');
+            rmdir($root . '/var/lib/dpkg');
+            rmdir($root . '/var/lib');
+            rmdir($root . '/var');
+            rmdir($root . '/usr/bin');
+            rmdir($root . '/usr');
+            rmdir($root);
+        }
+    }
+
+    public function test_discovered_runtime_command_rejects_paths_outside_approved_roots(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        DiscoveredPhpCommand::fromPath('/usr/bin/../tmp/php7.4', 'cli');
+    }
+
+    public function test_runtime_command_discovery_reports_its_command_limit(): void
+    {
+        $root = sys_get_temp_dir() . '/pra-runtime-cap-' . bin2hex(random_bytes(6));
+        mkdir($root . '/usr/bin', 0777, true);
+        for ($index = 0; $index < 130; ++$index) {
+            file_put_contents($root . '/usr/bin/php5.' . $index, 'fixture PHP executable');
+        }
+        file_put_contents($root . '/commands.json', '{"commands":{}}');
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-27T00:00:00Z',
+            ))->collect();
+
+            self::assertTrue($this->factValue($inventory, 'runtime.discovery.truncated'));
+            $coverage = array_values(array_filter(
+                $inventory['coverage'],
+                static fn(array $check): bool => $check['check_id'] === 'runtime.discovery',
+            ));
+            self::assertCount(1, $coverage);
+            self::assertSame('blocked', $coverage[0]['status']);
+            self::assertStringContainsString('limit', strtolower(is_string($coverage[0]['gap']) ? $coverage[0]['gap'] : ''));
+        } finally {
+            $this->removeTemporaryTree($root);
+        }
     }
 
     public function test_absent_configuration_and_worker_evidence_remain_unknown(): void
@@ -320,5 +504,20 @@ final class RuntimeInventoryCollectorTest extends TestCase
         }
 
         return null;
+    }
+
+    private function removeTemporaryTree(string $root): void
+    {
+        foreach (new \DirectoryIterator($root) as $entry) {
+            if ($entry->isDot()) {
+                continue;
+            }
+            if ($entry->isLink() || $entry->isFile()) {
+                unlink($entry->getPathname());
+            } elseif ($entry->isDir()) {
+                $this->removeTemporaryTree($entry->getPathname());
+            }
+        }
+        rmdir($root);
     }
 }

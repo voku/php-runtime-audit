@@ -15,7 +15,7 @@ use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
  * @phpstan-import-type VendorRule from AdvisoryCatalog
  * @phpstan-import-type RuntimeFact from RuntimeInventoryCollector
  * @phpstan-import-type RuntimeConfigSetting from RuntimeInventoryCollector
- * @phpstan-type RuntimeTarget array{id: string, kind: string, version: string|null, package: string|null, package_version: string|null, source_fact_id: string|null, package_fact_id: string|null, deleted: bool|null, provenance_verified: bool, provenance_fact_id: string|null}
+ * @phpstan-type RuntimeTarget array{id: string, subject_id: string, kind: string, version: string|null, package: string|null, package_version: string|null, source_fact_id: string|null, package_fact_id: string|null, deleted: bool|null, provenance_verified: bool, provenance_fact_id: string|null}
  * @phpstan-type AdvisorySource array{source_id: string, kind: 'vendor_advisory'|'other', locator: string, captured_at: string, captured_digest: string|null, current_digest: null, freshness: 'unknown'}
  * @phpstan-type AdvisoryFact array{fact_id: string, key: string, value: mixed, source_id: string}
  * @phpstan-type AdvisoryAssessment array{record_type: 'assessment', schema_version: '1.0', record_id: string, subject_id: string, assessed_at: string, verdict: string, patch_status: string, patch_evidence_ids: list<string>, compromise_evidence: array{status: 'unknown', evidence_ids: list<string>}, rationale: string}
@@ -34,7 +34,7 @@ final class AdvisoryEvaluator
         /** @var list<RuntimeTarget> $targets */
         $targets = $targets;
         if ($targets === []) {
-            $targets[] = ['id' => 'web-runtime-unknown', 'kind' => 'unknown', 'version' => null, 'package' => null, 'package_version' => null, 'source_fact_id' => null, 'package_fact_id' => null, 'deleted' => false, 'provenance_verified' => false, 'provenance_fact_id' => null];
+            $targets[] = ['id' => 'web-runtime-unknown', 'subject_id' => 'local-host', 'kind' => 'unknown', 'version' => null, 'package' => null, 'package_version' => null, 'source_fact_id' => null, 'package_fact_id' => null, 'deleted' => false, 'provenance_verified' => false, 'provenance_fact_id' => null];
         }
 
         /** @var list<AdvisorySource> $sources */
@@ -146,11 +146,12 @@ final class AdvisoryEvaluator
                         $evidenceIds[] = $evidenceId;
                     }
                 }
+                $evidenceIds = array_values(array_unique($evidenceIds));
                 $assessment = [
                     'record_type' => 'assessment',
                     'schema_version' => '1.0',
-                    'record_id' => 'assessment:' . $advisory['cve'] . ':' . $targetId,
-                    'subject_id' => 'local-host',
+                    'record_id' => 'assessment:' . $advisory['cve'] . ':' . $target['subject_id'],
+                    'subject_id' => $target['subject_id'],
                     'assessed_at' => $observedAt,
                     'verdict' => $basis['verdict'],
                     'patch_status' => $basis['patch_status'],
@@ -190,6 +191,7 @@ final class AdvisoryEvaluator
                         && $worker['package_provenance']['executable_path'] === $executablePath,
                     'provenance_fact_id' => $this->factId($facts, 'worker.' . $workerIndex . '.package_provenance'),
                     'id' => 'worker-' . $workerIndex,
+                    'subject_id' => $worker['id'],
                     'kind' => 'fpm',
                     'version' => $worker['version'],
                     'package' => $packageName,
@@ -212,7 +214,8 @@ final class AdvisoryEvaluator
                 $targets[] = [
                     'provenance_verified' => false,
                     'provenance_fact_id' => null,
-                    'id' => 'apache-' . $workerIndex . '-' . ($moduleIndex + 1),
+                    'id' => 'apache-' . $worker['pid'] . '-' . ($worker['process_start_ticks_since_boot'] ?? 'unknown') . '-' . ($moduleIndex + 1),
+                    'subject_id' => 'apache-' . $worker['pid'] . '-' . ($worker['process_start_ticks_since_boot'] ?? 'unknown') . '-' . ($moduleIndex + 1),
                     'kind' => 'apache-mod-php',
                     // Package inventory is installed-state evidence. It cannot establish which
                     // mod_php binary is still mapped into an already-running Apache process.
@@ -226,11 +229,46 @@ final class AdvisoryEvaluator
             }
         }
 
-        return array_slice($targets, 0, 32);
+        $runtimeIndex = 0;
+        foreach ($inventory['runtimes'] as $runtime) {
+            ++$runtimeIndex;
+            if (!is_string($runtime['id'] ?? null)
+                || !is_string($runtime['binary_path'] ?? null)
+                || !is_string($runtime['version'] ?? null)) {
+                continue;
+            }
+            $packageName = $this->cliPackageName($runtime['binary_path'], $inventory['distribution'] ?? '');
+            $package = $this->findPackage($packages, $packageName);
+            $targets[] = [
+                'id' => $runtime['id'], 'subject_id' => $runtime['id'], 'kind' => 'cli',
+                'version' => $runtime['version'], 'package' => $packageName,
+                'package_version' => $package['version'] ?? null,
+                'source_fact_id' => $this->factId($facts, 'runtime.cli.' . $runtimeIndex . '.version'),
+                'package_fact_id' => $package['fact_id'] ?? null, 'deleted' => false,
+                'provenance_verified' => false, 'provenance_fact_id' => null,
+            ];
+        }
+
+        foreach ($packages as $index => $package) {
+            if (!$this->isRuntimePackageName($package['name'])) {
+                continue;
+            }
+            $packageId = 'package-' . substr(hash('sha256', $package['name'] . "\0" . $package['version']), 0, 20);
+            $packageFactId = $this->factId($facts, 'package.' . $index . '.version');
+            $targets[] = [
+                'id' => $packageId, 'subject_id' => $packageId, 'kind' => 'package',
+                'version' => $this->upstreamVersion($package['version']), 'package' => $package['name'],
+                'package_version' => $package['version'], 'source_fact_id' => $packageFactId,
+                'package_fact_id' => $packageFactId, 'deleted' => false,
+                'provenance_verified' => $inventory['package_inventory_state'] === 'attempted' && $packageFactId !== null,
+                'provenance_fact_id' => $packageFactId,
+            ];
+        }
+
+        return array_slice($targets, 0, 512);
     }
 
-    /**
-     * @param list<array{name: string, version: string}> $packages
+    /** @param list<array{name: string, version: string}> $packages
      * @return array{version: string, fact_id: string}|null
      */
     private function findPackage(array $packages, ?string $name): ?array
@@ -247,9 +285,128 @@ final class AdvisoryEvaluator
         if (count($matches) !== 1) {
             return null;
         }
-
         return array_values($matches)[0][0];
+    }
 
+    private function cliPackageName(string $path, string $distribution): ?string
+    {
+        if (preg_match('~\A/opt/remi/php([0-9]{2,3})/root/usr/bin/php\z~', $path, $matches) === 1) {
+            return 'php' . $matches[1] . '-php-cli';
+        }
+        if ($distribution === 'alpine' && preg_match('/\Aphp(8[2-5])\z/', basename($path), $matches) === 1) {
+            return 'php' . $matches[1];
+        }
+        if (preg_match('/\Aphp(5\.[0-9]+|7\.[0-9]+|8\.[0-9]+)\z/', basename($path), $matches) === 1) {
+            return 'php' . $matches[1] . '-cli';
+        }
+        if (preg_match('/\Aphp([0-9]{2,3})\z/', basename($path), $matches) === 1) {
+            return 'php' . $matches[1] . '-cli';
+        }
+        return basename($path) === 'php' ? 'php-cli' : null;
+    }
+
+    private function isRuntimePackageName(string $name): bool
+    {
+        return preg_match('/\Aphp[0-9]{2,3}-php-(?:cli|fpm|cgi)\z/', $name) === 1
+            || preg_match('/\Aphp(?:[0-9]+(?:\.[0-9]+)?|[0-9]{2,3})?-(?:cli|fpm|cgi)\z/', $name) === 1
+            || preg_match('/\Alibapache2-mod-php(?:[0-9]+(?:\.[0-9]+)?)?\z/', $name) === 1
+            || preg_match('/\Aphp[0-9]{2,3}\z/', $name) === 1;
+    }
+
+    /**
+     * Select config observations only when their path identifies this PHP branch.
+     * Generic roots are usable only when there is a single known web runtime branch.
+     *
+     * @phpstan-param RuntimeConfigSetting $setting
+     * @phpstan-param RuntimeTarget $target
+     * @phpstan-param RuntimeInventory $inventory
+     * @phpstan-return RuntimeConfigSetting
+     */
+    private function configurationForTarget(array $setting, array $target, array $inventory): array
+    {
+        $branch = $this->versionBranch($target['version'] ?? $target['package_version']);
+        if ($branch === null) {
+            return ['value' => null, 'state' => 'unknown', 'files' => [], 'observations' => []];
+        }
+        $compactBranch = str_replace('.', '', $branch);
+        $roots = [];
+        foreach ($setting['observations'] as $observation) {
+            $root = $observation['configuration_root'];
+            if (!is_string($root)) {
+                continue;
+            }
+            if (preg_match('#(?:\A|/)php/' . preg_quote($branch, '#') . '/fpm\z#', $root) === 1
+                || preg_match('#(?:\A|/)php' . preg_quote($compactBranch, '#') . '(?:/|\z)#', $root) === 1) {
+                $roots[$root] = true;
+            }
+        }
+        if (count($roots) !== 1) {
+            $allRoots = [];
+            foreach ($setting['observations'] as $observation) {
+                if (is_string($observation['configuration_root'])) {
+                    $allRoots[$observation['configuration_root']] = true;
+                }
+            }
+            if ($roots !== [] || count($allRoots) !== 1 || $this->fpmBranches($inventory) !== [$branch]) {
+                return ['value' => null, 'state' => 'unknown', 'files' => [], 'observations' => []];
+            }
+            $roots = $allRoots;
+        }
+        $root = array_key_first($roots);
+        $observations = array_values(array_filter(
+            $setting['observations'],
+            static fn(array $observation): bool => $observation['configuration_root'] === $root,
+        ));
+        $values = array_values(array_unique(array_column($observations, 'value')));
+        $state = count($values) > 1 ? 'conflict' : ($values === [] ? 'unknown' : 'observed');
+        return [
+            'value' => $state === 'observed' ? $values[0] : null,
+            'state' => $state,
+            'files' => array_values(array_unique(array_column($observations, 'file'))),
+            'observations' => $observations,
+        ];
+    }
+
+    /** @phpstan-param RuntimeInventory $inventory
+     * @return list<string>
+     */
+    private function fpmBranches(array $inventory): array
+    {
+        $branches = [];
+        foreach ($inventory['workers'] as $worker) {
+            if ($worker['kind'] === 'fpm') {
+                $branch = $this->versionBranch($worker['version']);
+                if ($branch !== null) {
+                    $branches[$branch] = true;
+                }
+            } elseif ($worker['apache_php_modules'] !== null) {
+                foreach ($worker['apache_php_modules'] as $modulePath) {
+                    if (preg_match('/\Alibphp([0-9]+\.[0-9]+)\.so\z/', basename($modulePath), $matches) === 1) {
+                        $branches[$matches[1]] = true;
+                    }
+                }
+            }
+        }
+        foreach ($inventory['packages'] as $package) {
+            if (!is_string($package['name'] ?? null) || !is_string($package['version'] ?? null)) {
+                continue;
+            }
+            if (preg_match('/\Aphp[0-9]{2,3}-php-fpm\z/', $package['name']) === 1
+                || preg_match('/\Aphp(?:[0-9]+\.[0-9]+)?-fpm\z/', $package['name']) === 1
+                || preg_match('/\Aphp[0-9]{2,3}-fpm\z/', $package['name']) === 1) {
+                $branch = $this->versionBranch($package['version']);
+            } elseif (preg_match('/\Alibapache2-mod-php([0-9]+\.[0-9]+)\z/', $package['name'], $matches) === 1) {
+                $branch = $matches[1];
+            } else {
+                $branch = null;
+            }
+            if ($branch !== null) {
+                $branches[$branch] = true;
+            }
+        }
+        $result = array_keys($branches);
+        sort($result, SORT_STRING);
+        return $result;
     }
 
     /**
@@ -293,15 +450,24 @@ final class AdvisoryEvaluator
         if (!is_string($path) || str_starts_with($path, '/usr/local/')) {
             return null;
         }
+        if (preg_match('~\A/opt/remi/php([0-9]{2,3})/root/usr/sbin/php-fpm\z~', $path, $matches) === 1) {
+            return 'php' . $matches[1] . '-php-fpm';
+        }
         $basename = basename($path);
-        if ($distribution === 'alpine' && preg_match('/\Aphp-fpm(8[2-5])\z/', $basename, $matches) === 1) {
+        if ($distribution === 'alpine' && preg_match('/\Aphp-fpm([0-9]{2,3})\z/', $basename, $matches) === 1) {
             return dirname($path) === '/usr/sbin' ? 'php' . $matches[1] . '-fpm' : null;
         }
-        if (preg_match('/\Aphp-fpm(8\.[2-5])\z/', $basename, $matches) === 1) {
+        if (preg_match('/\Aphp-fpm([0-9]+\.[0-9]+)\z/', $basename, $matches) === 1) {
+            return dirname($path) === '/usr/sbin' ? 'php' . $matches[1] . '-fpm' : null;
+        }
+        if (preg_match('/\Aphp-fpm([0-9]{2,3})\z/', $basename, $matches) === 1) {
             return dirname($path) === '/usr/sbin' ? 'php' . $matches[1] . '-fpm' : null;
         }
 
-        return $basename === 'php-fpm' && dirname($path) === '/usr/sbin' ? 'php-fpm' : null;
+        if ($basename === 'php-fpm' && dirname($path) === '/usr/sbin') {
+            return 'php-fpm';
+        }
+        return null;
     }
 
     /**
@@ -387,8 +553,16 @@ final class AdvisoryEvaluator
             $uploadSetting = ['value' => null, 'state' => 'unknown', 'files' => [], 'observations' => []];
             $serializeSetting = ['value' => null, 'state' => 'unknown', 'files' => [], 'observations' => []];
             if ($configurationSapi !== null) {
-                $uploadSetting = $inventory['configuration_by_sapi'][$configurationSapi]['session.upload_progress.enabled'];
-                $serializeSetting = $inventory['configuration_by_sapi'][$configurationSapi]['session.serialize_handler'];
+                $uploadSetting = $this->configurationForTarget(
+                    $inventory['configuration_by_sapi'][$configurationSapi]['session.upload_progress.enabled'],
+                    $target,
+                    $inventory,
+                );
+                $serializeSetting = $this->configurationForTarget(
+                    $inventory['configuration_by_sapi'][$configurationSapi]['session.serialize_handler'],
+                    $target,
+                    $inventory,
+                );
                 $settingsObserved = $uploadSetting['state'] === 'observed'
                     && $serializeSetting['state'] === 'observed';
             }
@@ -465,7 +639,9 @@ final class AdvisoryEvaluator
                 return [
                     'verdict' => 'verified_fixed',
                     'patch_status' => 'verified_fixed',
-                    'reason' => 'The running web worker maps to the exact sourced fixed vendor package build for the identified release.',
+                    'reason' => $target['kind'] === 'package'
+                        ? 'The installed package inventory matches the exact sourced fixed vendor package build for this package subject; this does not prove a running worker maps to that package.'
+                        : 'The running web worker maps to the exact sourced fixed vendor package build for the identified release.',
                 ];
             }
             if ($comparison > 0) {
@@ -479,7 +655,9 @@ final class AdvisoryEvaluator
             return [
                 'verdict' => 'potentially_affected',
                 'patch_status' => 'potentially_affected',
-                'reason' => 'The running web worker maps to a vendor package below the sourced fixed build for the identified release.',
+                'reason' => $target['kind'] === 'package'
+                    ? 'The installed package inventory is below the sourced fixed build for this package subject; active worker code identity is assessed separately.'
+                    : 'The running web worker maps to a vendor package below the sourced fixed build for the identified release.',
             ];
         }
 

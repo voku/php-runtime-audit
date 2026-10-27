@@ -32,8 +32,8 @@ final class AdvisoryEvaluatorTest extends TestCase
 
         /** @var RuntimeAuditReport $report */
         $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
-        self::assertSame(3, $report['summary']['assessment_count']);
-        self::assertSame(4, $report['summary']['coverage_count']);
+        self::assertSame(12, $report['summary']['assessment_count']);
+        self::assertSame(5, $report['summary']['coverage_count']);
         self::assertSame('unknown', $report['summary']['compromise_evidence']);
         self::assertSame('coverage', $report['records'][1]['record_type']);
     }
@@ -48,6 +48,38 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertStringContainsString('Runtime: 8.2.34.', $assessment['CVE-2026-109618']['rationale']);
     }
 
+    public function test_cli_target_evidence_cites_its_own_runtime_fact_not_a_neighboring_one(): void
+    {
+        [$inventory, $evaluation] = $this->evaluate('debian-fpm');
+        $cliRuntime = $inventory['runtimes'][0];
+        self::assertSame('cli', $cliRuntime['kind']);
+
+        $ownVersionFact = null;
+        foreach ($inventory['facts'] as $fact) {
+            if ($fact['key'] === 'runtime.cli.1.version') {
+                $ownVersionFact = $fact;
+            }
+        }
+        self::assertNotNull($ownVersionFact, 'The collector must record a runtime.cli.1.version fact for the single discovered CLI runtime.');
+        self::assertSame($cliRuntime['version'], $ownVersionFact['value']);
+
+        $basisFact = null;
+        foreach ($evaluation['facts'] as $fact) {
+            if (str_starts_with($fact['key'], 'advisory.')
+                && str_ends_with($fact['key'], '.' . $cliRuntime['id'] . '.assessment_basis')) {
+                $basisFact = $fact;
+                break;
+            }
+        }
+        self::assertNotNull($basisFact, 'The CLI target must have an assessment_basis fact.');
+        self::assertIsArray($basisFact['value']);
+        self::assertSame(
+            $ownVersionFact['fact_id'],
+            $basisFact['value']['runtime_fact_id'],
+            'A CLI target must cite its own runtime.cli.N.version fact as evidence, not a neighboring runtime index.',
+        );
+    }
+
     public function test_unknown_rhel_family_backport_status_stays_unknown(): void
     {
         [, $evaluation] = $this->evaluate('rocky9-fpm');
@@ -55,6 +87,55 @@ final class AdvisoryEvaluatorTest extends TestCase
 
         self::assertSame('unknown', $assessment['CVE-2026-109618']['patch_status']);
         self::assertSame('unknown', $assessment['CVE-2026-109619']['patch_status']);
+    }
+
+    public function test_remi_cli_and_fpm_packages_keep_distinct_runtime_subjects_with_unknown_vendor_status(): void
+    {
+        $inventory = $this->collectInventory('debian-fpm');
+        $cliPath = '/opt/remi/php74/root/usr/bin/php';
+        $cliId = 'cli-' . substr(hash('sha256', $cliPath), 0, 20);
+        $fpmPath = '/opt/remi/php74/root/usr/sbin/php-fpm';
+        $workerId = $inventory['workers'][0]['id'];
+
+        $inventory['runtimes'][0]['id'] = $cliId;
+        $inventory['runtimes'][0]['binary_path'] = $cliPath;
+        $inventory['runtimes'][0]['version'] = '7.4.33';
+        $inventory['workers'][0]['executable_path'] = $fpmPath;
+        $inventory['workers'][0]['version'] = '7.4.33';
+        $inventory['workers'][0]['package_provenance'] = \voku\PhpRuntimeAudit\RuntimeInventory\RuntimePackageProvenance::unknown('unsupported_package_integrity');
+        $inventory['packages'] = [
+            ['name' => 'php74-php-cli', 'version' => '7.4.33-1.el9.remi'],
+            ['name' => 'php74-php-fpm', 'version' => '7.4.33-1.el9.remi'],
+        ];
+        foreach ($inventory['facts'] as &$fact) {
+            if ($fact['key'] === 'runtime.cli.1.id') {
+                $fact['value'] = $cliId;
+            } elseif ($fact['key'] === 'runtime.cli.1.binary_path') {
+                $fact['value'] = $cliPath;
+            } elseif ($fact['key'] === 'runtime.cli.1.version') {
+                $fact['value'] = '7.4.33';
+            } elseif ($fact['key'] === 'worker.1.executable_path') {
+                $fact['value'] = $fpmPath;
+            } elseif ($fact['key'] === 'worker.1.version') {
+                $fact['value'] = '7.4.33';
+            }
+        }
+        unset($fact);
+
+        [, $evaluation] = $this->evaluateInventory($inventory);
+        $bySubject = [];
+        foreach ($evaluation['assessments'] as $assessment) {
+            $bySubject[$assessment['subject_id']] = $assessment;
+        }
+        $cliPackageId = 'package-' . substr(hash('sha256', "php74-php-cli\0" . '7.4.33-1.el9.remi'), 0, 20);
+        $fpmPackageId = 'package-' . substr(hash('sha256', "php74-php-fpm\0" . '7.4.33-1.el9.remi'), 0, 20);
+
+        foreach ([$cliId, $workerId, $cliPackageId, $fpmPackageId] as $subjectId) {
+            self::assertArrayHasKey($subjectId, $bySubject);
+            self::assertSame('unknown', $bySubject[$subjectId]['patch_status']);
+        }
+        self::assertStringContainsString('Package: php74-php-cli 7.4.33-1.el9.remi.', $bySubject[$cliId]['rationale']);
+        self::assertStringContainsString('Package: php74-php-fpm 7.4.33-1.el9.remi.', $bySubject[$workerId]['rationale']);
     }
 
     public function test_exact_alpine_vendor_build_without_worker_integrity_stays_unknown(): void
@@ -507,7 +588,18 @@ final class AdvisoryEvaluatorTest extends TestCase
         $result = [];
         foreach ($evaluation['assessments'] as $assessment) {
             $recordParts = explode(':', $assessment['record_id']);
-            $result[$recordParts[1]] = $assessment;
+            $subjectId = $assessment['subject_id'];
+            $rank = str_starts_with($subjectId, 'worker-') || str_starts_with($subjectId, 'apache-')
+                ? 3
+                : (str_starts_with($subjectId, 'cli-') ? 2 : (str_starts_with($subjectId, 'package-') ? 1 : 0));
+            $current = $result[$recordParts[1]] ?? null;
+            $currentSubjectId = is_array($current) ? $current['subject_id'] : '';
+            $currentRank = str_starts_with($currentSubjectId, 'worker-') || str_starts_with($currentSubjectId, 'apache-')
+                ? 3
+                : (str_starts_with($currentSubjectId, 'cli-') ? 2 : (str_starts_with($currentSubjectId, 'package-') ? 1 : -1));
+            if ($rank > $currentRank) {
+                $result[$recordParts[1]] = $assessment;
+            }
         }
 
         return $result;

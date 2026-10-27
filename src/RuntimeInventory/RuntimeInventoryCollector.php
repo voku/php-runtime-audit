@@ -12,10 +12,10 @@ use voku\PhpRuntimeAudit\Evidence\DuplicateJsonKeyGuard;
 /**
  * Collects bounded local facts without contacting or changing the audited host.
  *
- * @phpstan-type RuntimeCli array{kind: 'cli', binary_path: string, version: string, sapi: 'cli', extensions: list<string>|null}
+ * @phpstan-type RuntimeCli array{id: string, kind: 'cli', binary_path: string, version: string, sapi: 'cli', extensions: list<string>|null}
  * @phpstan-type RuntimePackage array{name: string, version: string}
  * @phpstan-import-type PackageProvenance from RuntimePackageProvenance
- * @phpstan-type RuntimeWorker array{pid: int, kind: 'fpm'|'apache', process_name: string|null, executable_path: string|null, executable_deleted: bool|null, version: string|null, apache_php_modules: list<string>|null, apache_php_module_deleted: bool|null, process_start_ticks_since_boot: int|null, package_provenance: PackageProvenance}
+ * @phpstan-type RuntimeWorker array{id: string, pid: int, kind: 'fpm'|'apache', process_name: string|null, executable_path: string|null, executable_deleted: bool|null, version: string|null, apache_php_modules: list<string>|null, apache_php_module_deleted: bool|null, process_start_ticks_since_boot: int|null, package_provenance: PackageProvenance}
  * @phpstan-type RuntimeSource array{source_id: string, kind: string, locator: string, captured_at: string, captured_digest: string|null, current_digest: string|null, freshness: string}
  * @phpstan-type RuntimeFact array{fact_id: string, key: string, value: mixed, source_id: string}
  * @phpstan-type RuntimeConfigObservation array{value: string, file: string, context: string, configuration_root: string|null}
@@ -37,6 +37,10 @@ final class RuntimeInventoryCollector
     private const MAX_FPM_POOL_SECTIONS = 32;
     private const MAX_PROCESSES = 4096;
     private const MAX_WORKERS = 16;
+    private const MAX_RUNTIME_DIRECTORY_ENTRIES = 2048;
+    private const MAX_RUNTIME_COMMANDS = 128;
+    private const MAX_PATH_ENTRIES = 64;
+    private const MAX_PATH_BYTES = 8192;
     private const CONFIG_KEYS = [
         'session.upload_progress.enabled',
         'session.serialize_handler',
@@ -54,11 +58,17 @@ final class RuntimeInventoryCollector
     private array $sourceByLocator = [];
     /** @var array<string, ProcessResult> */
     private array $processResults = [];
+    /** @var list<ProcessCommandSpec> */
+    private array $phpCommands = [];
     private string $rootRealPath;
     private string $observedAt;
     private string $workerDiscoveryState = 'unknown';
     private bool $workerDiscoveryTruncated = false;
     private bool $workerDiscoveryIncomplete = false;
+    private bool $runtimeDiscoveryTruncated = false;
+    private bool $runtimeDiscoveryIncomplete = false;
+    private int $pathCandidateCount = 0;
+    private bool $packageInventoryTruncated = false;
     private bool $configurationDiscoveryIncomplete = false;
     private int $configurationFilesFound = 0;
 
@@ -66,6 +76,7 @@ final class RuntimeInventoryCollector
         private readonly ProcessRunner $processRunner,
         private readonly string $root = '/',
         ?string $observedAt = null,
+        private readonly ?string $pathValue = null,
     ) {
         $rootRealPath = realpath($root);
         if ($rootRealPath === false || !is_dir($rootRealPath)) {
@@ -82,9 +93,14 @@ final class RuntimeInventoryCollector
         $this->sources = [];
         $this->sourceByLocator = [];
         $this->processResults = [];
+        $this->phpCommands = [];
         $this->workerDiscoveryState = 'unknown';
         $this->workerDiscoveryTruncated = false;
         $this->workerDiscoveryIncomplete = false;
+        $this->runtimeDiscoveryTruncated = false;
+        $this->runtimeDiscoveryIncomplete = false;
+        $this->pathCandidateCount = 0;
+        $this->packageInventoryTruncated = false;
         $this->configurationDiscoveryIncomplete = false;
         $this->configurationFilesFound = 0;
 
@@ -184,20 +200,41 @@ final class RuntimeInventoryCollector
 
     private function collectCommands(): void
     {
-        foreach (ProcessCommand::cases() as $command) {
-            if (!$this->isFile($command->executablePath())) {
+        $commands = ProcessCommand::cases();
+        $knownPaths = [];
+        foreach ($commands as $command) {
+            if ($command->isPhpCli() || $command->isFpm()) {
+                $knownPaths[$command->executablePath()] = true;
+                $this->phpCommands[] = $command;
+            }
+        }
+        $pathDirectories = $this->pathDirectories();
+        foreach ($this->discoverPhpCommands(array_keys($knownPaths), $pathDirectories) as $command) {
+            $commands[] = $command;
+            $this->phpCommands[] = $command;
+        }
+
+        foreach ($commands as $command) {
+            $path = $command->executablePath();
+            if (!$this->isFile($path) || is_link($this->path($path))) {
                 continue;
             }
             $result = $this->processRunner->run($command);
-            $this->processResults[$command->value] = $result;
+            if ($command instanceof DiscoveredPhpCommand && !$result->succeeded()) {
+                $this->runtimeDiscoveryIncomplete = true;
+            }
+            $this->processResults[$command->id()] = $result;
             $source = $this->addSource(
-                in_array($command, [ProcessCommand::DpkgPackages, ProcessCommand::RpmPackages, ProcessCommand::ApkPackages], true)
+                $command instanceof ProcessCommand && in_array($command, [ProcessCommand::DpkgPackages, ProcessCommand::RpmPackages, ProcessCommand::ApkPackages], true)
                     ? 'package_database'
                     : 'runtime_report',
-                'argv:' . $command->value,
+                'argv:' . $command->id(),
                 $result->stdout,
             );
-            $this->addFact('command.' . $command->value . '.result', [
+            if ($command instanceof DiscoveredPhpCommand) {
+                $this->addFact('command.' . $command->id() . '.path', $path, $source);
+            }
+            $this->addFact('command.' . $command->id() . '.result', [
                 'succeeded' => $result->succeeded(),
                 'exit_code' => $result->exitCode,
                 'timed_out' => $result->timedOut,
@@ -205,6 +242,215 @@ final class RuntimeInventoryCollector
                 'error_category' => $this->commandErrorCategory($result),
             ], $source);
         }
+        $discoverySource = $this->addSource('other', 'runtime-command-discovery', json_encode([
+            'truncated' => $this->runtimeDiscoveryTruncated,
+            'incomplete' => $this->runtimeDiscoveryIncomplete,
+            'candidate_count' => count($this->phpCommands),
+            'path_directories_inspected' => count($pathDirectories),
+        ], JSON_THROW_ON_ERROR));
+        $this->addFact('runtime.discovery.truncated', $this->runtimeDiscoveryTruncated, $discoverySource);
+        $this->addFact('runtime.discovery.incomplete', $this->runtimeDiscoveryIncomplete, $discoverySource);
+        $this->addFact('runtime.discovery.path_directories_inspected', count($pathDirectories), $discoverySource);
+        $this->addFact('runtime.discovery.path_candidate_count', $this->pathCandidateCount, $discoverySource);
+    }
+
+    /**
+     * Find versioned CLI/FPM names in a finite set of system directories. Remi's
+     * side-by-side layout is handled by inspecting only known versioned roots.
+     *
+     * @param list<string> $knownPaths
+     * @param list<string> $pathDirectories
+     * @return list<DiscoveredPhpCommand>
+     */
+    private function discoverPhpCommands(array $knownPaths, array $pathDirectories): array
+    {
+        $known = array_fill_keys($knownPaths, true);
+        $found = [];
+        $visited = 0;
+        foreach (['/usr/bin', '/usr/local/bin', '/usr/sbin', '/usr/local/sbin'] as $directory) {
+            $this->scanRuntimeDirectory($directory, $directory, $known, $found, $visited);
+        }
+        foreach ($pathDirectories as $directory) {
+            if ($this->isSupportedRuntimeDirectory($directory)) {
+                continue;
+            }
+            $this->scanRuntimeDirectory($directory, $directory, $known, $found, $visited, $pathDirectories, false);
+        }
+
+        $remiRoot = $this->path('/opt/remi');
+        if (is_link($remiRoot)) {
+            $this->runtimeDiscoveryIncomplete = true;
+        } elseif (is_dir($remiRoot)) {
+            try {
+                foreach (new \DirectoryIterator($remiRoot) as $entry) {
+                    if ($entry->isDot()) {
+                        continue;
+                    }
+                    if (++$visited > self::MAX_RUNTIME_DIRECTORY_ENTRIES) {
+                        $this->runtimeDiscoveryTruncated = true;
+                        break;
+                    }
+                    if ($entry->isLink()) {
+                        if (preg_match('/\Aphp[0-9]{2,3}\z/', $entry->getFilename()) === 1) {
+                            $this->runtimeDiscoveryIncomplete = true;
+                        }
+                        continue;
+                    }
+                    if (!$entry->isDir() || preg_match('/\Aphp[0-9]{2,3}\z/', $entry->getFilename()) !== 1) {
+                        continue;
+                    }
+                    $prefix = '/opt/remi/' . $entry->getFilename() . '/root/usr';
+                    $this->scanRuntimeDirectory($prefix . '/bin', $prefix . '/bin', $known, $found, $visited);
+                    $this->scanRuntimeDirectory($prefix . '/sbin', $prefix . '/sbin', $known, $found, $visited);
+                    if (count($found) >= self::MAX_RUNTIME_COMMANDS) {
+                        $this->runtimeDiscoveryTruncated = true;
+                        break;
+                    }
+                }
+            } catch (\Throwable) {
+                $this->runtimeDiscoveryIncomplete = true;
+            }
+        }
+
+        return array_values($found);
+    }
+
+    /** @return list<string> */
+    private function pathDirectories(): array
+    {
+        $value = $this->pathValue ?? getenv('PATH');
+        if (!is_string($value) || $value === '') {
+            $this->runtimeDiscoveryIncomplete = true;
+            return [];
+        }
+        if (strlen($value) > self::MAX_PATH_BYTES) {
+            $this->runtimeDiscoveryTruncated = true;
+            $this->runtimeDiscoveryIncomplete = true;
+            $value = substr($value, 0, self::MAX_PATH_BYTES);
+        }
+
+        $entries = explode(PATH_SEPARATOR, $value);
+        if (count($entries) > self::MAX_PATH_ENTRIES) {
+            $this->runtimeDiscoveryTruncated = true;
+            $this->runtimeDiscoveryIncomplete = true;
+            $entries = array_slice($entries, 0, self::MAX_PATH_ENTRIES);
+        }
+
+        $directories = [];
+        foreach ($entries as $entry) {
+            if ($entry === '' || strlen($entry) > 512 || !str_starts_with($entry, '/')
+                || preg_match('/[\x00-\x1F\x7F]/', $entry) === 1) {
+                $this->runtimeDiscoveryIncomplete = true;
+                continue;
+            }
+            $segments = explode('/', trim($entry, '/'));
+            if (in_array('.', $segments, true) || in_array('..', $segments, true)) {
+                $this->runtimeDiscoveryIncomplete = true;
+                continue;
+            }
+            $directory = rtrim($entry, '/') ?: '/';
+            if (isset($directories[$directory])) {
+                continue;
+            }
+            $directories[$directory] = true;
+        }
+
+        return array_keys($directories);
+    }
+
+    /**
+     * @param array<string, true> $known
+     * @param array<string, DiscoveredPhpCommand> $found
+     * @param list<string> $pathDirectories
+     */
+    private function scanRuntimeDirectory(
+        string $absoluteDirectory,
+        string $commandDirectory,
+        array $known,
+        array &$found,
+        int &$visited,
+        array $pathDirectories = [],
+        bool $probeCommands = true,
+    ): void {
+        $directory = $this->path($absoluteDirectory);
+        if (is_link($directory)) {
+            $this->runtimeDiscoveryIncomplete = true;
+            return;
+        }
+        if (!is_dir($directory)) {
+            return;
+        }
+        $realDirectory = realpath($directory);
+        if ($realDirectory === false || !$this->withinRoot($realDirectory) || !is_dir($realDirectory)) {
+            $this->runtimeDiscoveryIncomplete = true;
+            return;
+        }
+        try {
+            foreach (new \DirectoryIterator($realDirectory) as $entry) {
+                if ($entry->isDot()) {
+                    continue;
+                }
+                if (++$visited > self::MAX_RUNTIME_DIRECTORY_ENTRIES) {
+                    $this->runtimeDiscoveryTruncated = true;
+                    return;
+                }
+                $name = $entry->getFilename();
+                $kind = preg_match('/\Aphp(?:[0-9]+(?:\.[0-9]+){0,2})?\z/', $name) === 1
+                    ? 'cli'
+                    : (preg_match('/\Aphp-fpm(?:[0-9]+(?:\.[0-9]+){0,2})?\z/', $name) === 1 ? 'fpm' : null);
+                if ($kind === null) {
+                    continue;
+                }
+                $path = $commandDirectory . '/' . $name;
+                if ($entry->isLink()) {
+                    $this->runtimeDiscoveryIncomplete = true;
+                    continue;
+                }
+                if (!$entry->isFile() || isset($known[$path]) || isset($found[$path])) {
+                    continue;
+                }
+                if (!$probeCommands) {
+                    $this->recordUnprobedPathCandidate($path, $kind);
+                    continue;
+                }
+                if (count($found) >= self::MAX_RUNTIME_COMMANDS) {
+                    $this->runtimeDiscoveryTruncated = true;
+                    return;
+                }
+                try {
+                    $found[$path] = DiscoveredPhpCommand::fromPath($path, $kind, $pathDirectories);
+                } catch (\InvalidArgumentException) {
+                    $this->runtimeDiscoveryIncomplete = true;
+                }
+            }
+        } catch (\Throwable) {
+            $this->runtimeDiscoveryIncomplete = true;
+        }
+    }
+
+    private function isSupportedRuntimeDirectory(string $directory): bool
+    {
+        return preg_match('~\A/(?:usr/bin|usr/local/bin|usr/sbin|usr/local/sbin|opt/remi/php[0-9]{2,3}/root/usr/(?:bin|sbin))\z~', $directory) === 1;
+    }
+
+    private function recordUnprobedPathCandidate(string $path, string $kind): void
+    {
+        $this->runtimeDiscoveryIncomplete = true;
+        ++$this->pathCandidateCount;
+        $source = $this->addSource('other', 'path-candidate:' . $path, $path);
+        $basename = basename($path);
+        $versionHint = null;
+        $pattern = $kind === 'cli' ? '/\Aphp([0-9]+\.[0-9]+)\z/' : '/\Aphp-fpm([0-9]+\.[0-9]+)\z/';
+        if (preg_match($pattern, $basename, $matches) === 1) {
+            $versionHint = $matches[1];
+        }
+        $this->addFact('runtime.discovery.path_candidate.' . $this->pathCandidateCount, [
+            'path' => $path,
+            'kind' => $kind,
+            'version_hint' => $versionHint,
+            'executable' => is_executable($this->path($path)),
+            'execution' => 'not_attempted_untrusted_path',
+        ], $source);
     }
 
     private function commandErrorCategory(ProcessResult $result): ?string
@@ -225,11 +471,11 @@ final class RuntimeInventoryCollector
     private function collectCliRuntimes(): array
     {
         $runtimes = [];
-        foreach (ProcessCommand::cases() as $command) {
+        foreach ($this->phpCommands as $command) {
             if (!$command->isPhpCli()) {
                 continue;
             }
-            $result = $this->processResults[$command->value] ?? null;
+            $result = $this->processResults[$command->id()] ?? null;
             if ($result === null || !$result->succeeded()) {
                 continue;
             }
@@ -248,8 +494,9 @@ final class RuntimeInventoryCollector
                 continue;
             }
             $extensions = $this->safeExtensions($data['extensions'] ?? null);
-            $sourceId = $this->sourceIdFor('argv:' . $command->value);
+            $sourceId = $this->sourceIdFor('argv:' . $command->id());
             $runtime = [
+                'id' => 'cli-' . substr(hash('sha256', $command->executablePath()), 0, 20),
                 'kind' => 'cli',
                 'binary_path' => $command->executablePath(),
                 'version' => $version,
@@ -259,6 +506,7 @@ final class RuntimeInventoryCollector
             $runtimes[] = $runtime;
             $prefix = 'runtime.cli.' . count($runtimes);
             $this->addFact($prefix . '.version', $version, $sourceId);
+            $this->addFact($prefix . '.id', $runtime['id'], $sourceId);
             $this->addFact($prefix . '.sapi', $sapi, $sourceId);
             $this->addFact($prefix . '.binary_path', $command->executablePath(), $sourceId);
             $this->addFact($prefix . '.extensions', $extensions, $sourceId);
@@ -292,9 +540,9 @@ final class RuntimeInventoryCollector
             return ['manager' => null, 'state' => 'unknown', 'packages' => []];
         }
 
-        $result = $this->processResults[$command->value] ?? null;
+        $result = $this->processResults[$command->id()] ?? null;
         if ($result === null || !$result->succeeded()) {
-            $source = $this->sourceIdFor('argv:' . $command->value);
+            $source = $this->sourceIdFor('argv:' . $command->id());
             $this->addFact('packages.manager', $manager, $source);
             $this->addFact('packages.state', 'unknown', $source);
             return ['manager' => $manager, 'state' => 'unknown', 'packages' => []];
@@ -320,10 +568,12 @@ final class RuntimeInventoryCollector
             }
             $packages[] = ['name' => $name, 'version' => $version];
         }
-        $source = $this->sourceIdFor('argv:' . $command->value);
+        $source = $this->sourceIdFor('argv:' . $command->id());
         $this->addFact('packages.state', 'attempted', $source);
         $this->addFact('packages.manager', $manager, $source);
         $this->addFact('packages.inventory_count', count($packages), $source);
+        $this->packageInventoryTruncated = count($packages) > 256;
+        $this->addFact('packages.truncated', $this->packageInventoryTruncated, $source);
         foreach (array_slice($packages, 0, 256) as $index => $package) {
             $this->addFact('package.' . $index . '.name', $package['name'], $source);
             $this->addFact('package.' . $index . '.version', $package['version'], $source);
@@ -454,6 +704,7 @@ final class RuntimeInventoryCollector
             $sourceContent = implode("\n", array_filter([$comm, $exeLink ?: '', $statBefore ?: '', $maps ?: '', $statAfter ?: '']));
             $source = $this->addSource('other', $base . '/comm,/exe,/stat,/maps', $sourceContent);
             $worker = [
+                'id' => 'worker-' . (int) $entry . '-' . ($startTicks === null ? 'unknown' : $startTicks),
                 'pid' => (int) $entry,
                 'kind' => $kind,
                 'process_name' => self::safeToken($name, 128),
@@ -467,6 +718,7 @@ final class RuntimeInventoryCollector
             ];
             $workers[] = $worker;
             $prefix = 'worker.' . count($workers);
+            $this->addFact($prefix . '.id', $worker['id'], $source);
             $this->addFact($prefix . '.kind', $kind, $source);
             $this->addFact($prefix . '.process_name', $worker['process_name'], $source);
             $this->addFact($prefix . '.executable_path', $executable, $source);
@@ -555,9 +807,11 @@ final class RuntimeInventoryCollector
             ],
             [
                 'check_id' => 'runtime.packages',
-                'status' => $packageState['state'] === 'attempted' ? 'attempted' : 'blocked',
+                'status' => $packageState['state'] === 'attempted' && !$this->packageInventoryTruncated ? 'attempted' : 'blocked',
                 'evidence_ids' => $this->factIdsForPrefix('packages.'),
-                'gap' => $packageState['state'] === 'attempted' ? null : 'No supported package database query produced a complete package inventory.',
+                'gap' => $this->packageInventoryTruncated
+                    ? 'The package inventory exceeded its configured record limit; omitted package subjects remain unknown.'
+                    : ($packageState['state'] === 'attempted' ? null : 'No supported package database query produced a complete package inventory.'),
             ],
             [
                 'check_id' => 'runtime.workers',
@@ -573,6 +827,16 @@ final class RuntimeInventoryCollector
                     ? 'No supported PHP INI or FPM pool configuration files were accessible.'
                     : ($this->configurationDiscoveryIncomplete
                         ? 'Configuration discovery was bounded or incomplete; omitted or symlinked files remain unknown.'
+                        : null),
+            ],
+            [
+                'check_id' => 'runtime.discovery',
+                'status' => $this->runtimeDiscoveryIncomplete || $this->runtimeDiscoveryTruncated ? 'blocked' : 'attempted',
+                'evidence_ids' => $this->factIdsForPrefix('runtime.discovery.'),
+                'gap' => $this->runtimeDiscoveryTruncated
+                    ? 'Runtime binary discovery reached its configured PATH, directory, or command limit; additional PHP installations may be omitted.'
+                    : ($this->runtimeDiscoveryIncomplete
+                        ? 'One or more PATH entries, runtime directories, or candidate binaries could not be inspected safely; unobserved installations remain unknown.'
                         : null),
             ],
         ];
@@ -1003,11 +1267,11 @@ final class RuntimeInventoryCollector
         if ($path === null) {
             return null;
         }
-        foreach (ProcessCommand::cases() as $command) {
+        foreach ($this->phpCommands as $command) {
             if (!$command->isFpm() || $command->executablePath() !== $path) {
                 continue;
             }
-            $result = $this->processResults[$command->value] ?? null;
+            $result = $this->processResults[$command->id()] ?? null;
             if ($result === null || !$result->succeeded()) {
                 return null;
             }
@@ -1068,11 +1332,11 @@ final class RuntimeInventoryCollector
 
     private static function fpmProcessVersion(string $name): ?string
     {
-        if (preg_match('/\Aphp-fpm(8\.[0-9]{1,2}|8[0-9]{1,2})\z/i', $name, $matches) !== 1) {
+        if (preg_match('/\Aphp-fpm([0-9]+\.[0-9]{1,2}|[0-9]{2,3})\z/i', $name, $matches) !== 1) {
             return null;
         }
-        if (preg_match('/\A8([0-9]{1,2})\z/', $matches[1], $compact) === 1) {
-            return '8.' . $compact[1];
+        if (preg_match('/\A([0-9]+)([0-9]{1,2})\z/', $matches[1], $compact) === 1) {
+            return $compact[1] . '.' . $compact[2];
         }
 
         return $matches[1];

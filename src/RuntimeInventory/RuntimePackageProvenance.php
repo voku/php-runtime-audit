@@ -48,7 +48,7 @@ final class RuntimePackageProvenance
         if (!in_array($distribution, ['debian', 'ubuntu'], true) || $manager !== 'dpkg') {
             return $unknown('unsupported_package_integrity');
         }
-        if ($path === null || preg_match('~\A/usr/sbin/php-fpm(8\.[0-9]{1,2})\z~', $path, $match) !== 1) {
+        if ($path === null || preg_match('~\A/usr/sbin/php-fpm([0-9]+\.[0-9]{1,2})\z~', $path, $match) !== 1) {
             return $unknown('unsupported_executable_path');
         }
         $name = 'php' . $match[1] . '-fpm';
