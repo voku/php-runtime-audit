@@ -13,18 +13,25 @@ final class RemediationReportCliTest extends TestCase
         $root = dirname(__DIR__, 2);
         $reportPath = sys_get_temp_dir() . '/pra5-report-' . bin2hex(random_bytes(8)) . '.md';
 
-        $inventoryJson = $this->runCli([PHP_BINARY, $root . '/bin/php-runtime-audit-inventory', '--fixture', $root . '/tests/fixtures/runtime/debian-fpm-vulnerable'], '');
-        self::assertNotSame('', $inventoryJson['stdout']);
+        $inventoryJson = $this->runCli([PHP_BINARY, '-d', 'register_argc_argv=1', $root . '/bin/php-runtime-audit-inventory', '--fixture', $root . '/tests/fixtures/runtime/debian-fpm-vulnerable'], '');
+        self::assertNotSame('', $inventoryJson['stdout'], $inventoryJson['stderr']);
 
         try {
             $result = $this->runCli([PHP_BINARY, $root . '/bin/php-runtime-audit-report', '--report', $reportPath], $inventoryJson['stdout']);
 
             self::assertSame(0, $result['exit'], $result['stderr']);
-            $plan = json_decode($result['stdout'], true, 512, JSON_THROW_ON_ERROR);
+            $plan = $this->decodeJsonObject($result['stdout']);
             self::assertSame('remediation_plan', $plan['record_type']);
             self::assertFalse($plan['automatic_apply']);
-            self::assertNotEmpty($plan['actions']);
-            foreach ($plan['actions'] as $action) {
+            $actions = $plan['actions'];
+            if (!is_array($actions)) {
+                self::fail('Expected the plan to have an actions array.');
+            }
+            self::assertNotEmpty($actions);
+            foreach ($actions as $action) {
+                if (!is_array($action)) {
+                    self::fail('Expected each action to be an object.');
+                }
                 self::assertTrue($action['requires_human_approval']);
             }
 
@@ -99,9 +106,21 @@ final class RemediationReportCliTest extends TestCase
         $result = $this->runCli([PHP_BINARY, $root . '/bin/php-runtime-audit-report'], '{"summary": {}}');
 
         self::assertSame(0, $result['exit'], $result['stderr']);
-        $plan = json_decode($result['stdout'], true, 512, JSON_THROW_ON_ERROR);
+        $plan = $this->decodeJsonObject($result['stdout']);
         self::assertSame([], $plan['actions']);
+        self::assertIsArray($plan['warnings']);
         self::assertNotEmpty($plan['warnings']);
+    }
+
+    /** @return array<string, mixed> */
+    private function decodeJsonObject(string $json): array
+    {
+        $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        if (!is_array($decoded)) {
+            self::fail('Expected the CLI to print a JSON object.');
+        }
+
+        return $decoded;
     }
 
     /**

