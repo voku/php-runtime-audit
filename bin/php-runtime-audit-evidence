@@ -5,4 +5,13 @@ declare(strict_types=1);
 
 require dirname(__DIR__) . '/vendor/autoload.php';
 
-exit((new \voku\PhpRuntimeAudit\Evidence\EvidenceCli())->run(array_slice($argv, 1)));
+$rawArguments = $_SERVER['argv'] ?? [];
+$arguments = [];
+if (is_array($rawArguments)) {
+    foreach ($rawArguments as $argument) {
+        if (is_string($argument)) {
+            $arguments[] = $argument;
+        }
+    }
+}
+exit((new \voku\PhpRuntimeAudit\Evidence\EvidenceCli())->run(array_slice($arguments, 1)));

@@ -43,6 +43,14 @@ final class NetworkIsolationTest extends TestCase
     {
         $command = is_executable('/usr/local/bin/php') ? ProcessCommand::PhpUsrLocalBin : ProcessCommand::PhpUsrBin;
         $result = (new SystemProcessRunner())->run($command);
+        if (!is_executable($command->executablePath())) {
+            self::assertFalse($result->succeeded());
+            self::assertSame('', $result->stdout);
+            self::assertSame('allowlisted executable is unavailable', $result->error);
+
+            return;
+        }
+
         if (NetworkIsolation::currentNamespaceIsIsolated()) {
             self::assertTrue($result->succeeded(), $result->stderr . ($result->error ?? ''));
             $this->assertPhpPayload($result->stdout);

@@ -2,7 +2,8 @@
 set -euo pipefail
 
 project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
-fixture_dir=$(mktemp -d "$project_root/.runtime-fixture.XXXXXX")
+fixture_parent=${TMPDIR:-$project_root}
+fixture_dir=$(mktemp -d "$fixture_parent/.runtime-fixture.XXXXXX")
 containers=()
 
 docker_local() {
