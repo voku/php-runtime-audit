@@ -208,6 +208,31 @@ final class RuntimePackageProvenanceTest extends TestCase
         self::assertFalse($this->collectApache()['workers'][0]['package_provenance']['verified']);
     }
 
+    public function test_apache_module_provenance_is_cached_per_path_across_worker_processes(): void
+    {
+        $module = $this->apacheRoot . '/usr/lib/apache2/modules/libphp.so';
+        $file = fopen($module, 'r+');
+        self::assertIsResource($file);
+        ftruncate($file, 8_388_608);
+        fclose($file);
+        file_put_contents(
+            $this->apacheRoot . '/var/lib/dpkg/info/libapache2-mod-php8.2.md5sums',
+            md5_file($module) . "  usr/lib/apache2/modules/libphp.so\n",
+        );
+        $stat = file_get_contents($this->apacheRoot . '/proc/789/stat');
+        self::assertIsString($stat);
+        for ($pid = 790; $pid < 805; ++$pid) {
+            $this->copyDirectory($this->apacheRoot . '/proc/789', $this->apacheRoot . '/proc/' . $pid);
+            file_put_contents($this->apacheRoot . '/proc/' . $pid . '/stat', preg_replace('/\A789 /', (string) $pid . ' ', $stat));
+        }
+        $workers = $this->collectApache()['workers'];
+        self::assertCount(16, $workers);
+        // Without per-path caching, the shared 64MiB hash budget would only cover ~8 of these
+        // 16 workers (each independently hashing the same 8MiB module); caching proves every
+        // worker resolves from one shared lookup instead of re-hashing the identical file.
+        self::assertCount(16, array_filter($workers, static fn(array $worker): bool => $worker['package_provenance']['verified']));
+    }
+
     /** @return RuntimeInventory */
     private function collect(): array
     {

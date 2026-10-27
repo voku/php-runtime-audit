@@ -20,6 +20,8 @@ final class RuntimePackageProvenance
     private int $remainingHashBytes = 67_108_864;
     private bool $statusCaptured = false;
     private ?string $capturedStatus = null;
+    /** @var array<string, array{provenance: PackageProvenance, sources: list<ProvenanceSource>}> */
+    private array $apacheModuleCache = [];
 
     public function __construct(private readonly string $root) {}
 
@@ -161,6 +163,19 @@ final class RuntimePackageProvenance
         if ($moduleDeleted !== false || $path === null || preg_match('~\A/[^\x00-\x1F]*/libphp[^\x00-\x1F/]*\.so\z~', $path) !== 1) {
             return $unknown('unsupported_executable_path');
         }
+        // Multiple Apache worker processes commonly map the same shared module file; cache the
+        // resolved identity per path so their redundant provenance checks don't re-walk dpkg's
+        // metadata and re-hash the same file against the shared hashing budget each time.
+        return $this->apacheModuleCache[$path] ??= $this->resolveApacheModuleOwner($packages, $path);
+    }
+
+    /**
+     * @param list<array{name: string, version: string}> $packages
+     * @return array{provenance: PackageProvenance, sources: list<ProvenanceSource>}
+     */
+    private function resolveApacheModuleOwner(array $packages, string $path): array
+    {
+        $unknown = static fn(string $reason): array => ['provenance' => self::unknown($reason), 'sources' => []];
         if (!$this->statusCaptured) {
             $this->capturedStatus = $this->readMetadata('/var/lib/dpkg/status', 8_388_608);
             $this->statusCaptured = true;
