@@ -89,12 +89,12 @@ run_fixture() {
 # the inventory's own worker/CLI facts by assert-disposable-report.php's expected-prefix check.
 # This covers FPM and Apache real workers on both the previously-verified 8.2/8.4 pair and on
 # PHP 8.5, so a passing run cannot be mistaken for a fixture-only or same-version-coincidence result.
-# FPM's full dotted version (e.g. "8.2.35") comes from invoking its own binary directly, so the
-# fpm prefixes below are matched against worker.N.version with a trailing dot. Apache's PHP
-# version cannot be probed the same way; it is only evident from the loaded module's own
-# filename (e.g. libphp8.4.so), so the apache prefixes below are major.minor only, with no
-# trailing dot -- see assert-disposable-report.php for the matching logic of each kind.
+# FPM's full dotted version (e.g. "8.2.35") comes from invoking its own binary directly, so it is
+# checked against worker.N.version. A live Apache process can't be probed that way, and current
+# official PHP images load an unversioned libphp.so with no version in the module path at all, so
+# apache coverage here is proven via the isolated CLI probe's own dotted version instead (each
+# image has exactly one PHP installed) -- see assert-disposable-report.php for both checks.
 run_fixture fpm 'php:8.2-fpm@sha256:77900c43ba8b8f2f61c73bcf68afbfb1b72a349052472e7640d402ef998754b3' php-fpm fpm-8.2 '8.2.'
-run_fixture apache 'php:8.4-apache@sha256:c6527b06c772a2c3cae648ce58c23a2a12ed2fed41cdfb0619ea64be008cc601' apache2 apache-8.4 '8.4'
+run_fixture apache 'php:8.4-apache@sha256:c6527b06c772a2c3cae648ce58c23a2a12ed2fed41cdfb0619ea64be008cc601' apache2 apache-8.4 '8.4.'
 run_fixture fpm 'php:8.5-fpm@sha256:f49965c6e6a237eb3b27a6fc565e167839dc8abc65ee0652af0078f6ecdf4bbd' php-fpm fpm-8.5 '8.5.'
-run_fixture apache 'php:8.5-apache@sha256:7cd25eb48f9763dfeabe8fda3939897aca2001802fadeafa1b602f26c735ef96' apache2 apache-8.5 '8.5'
+run_fixture apache 'php:8.5-apache@sha256:7cd25eb48f9763dfeabe8fda3939897aca2001802fadeafa1b602f26c735ef96' apache2 apache-8.5 '8.5.'

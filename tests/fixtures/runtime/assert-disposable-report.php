@@ -43,45 +43,42 @@ try {
         }
     }
     $workerSeen = false;
-    $workerVersionMatchesExpectedPrefix = $expectedVersionPrefix === null;
+    $fpmWorkerVersionMatches = $expectedVersionPrefix === null || $argv[2] !== 'fpm';
+    $cliVersionMatches = $expectedVersionPrefix === null;
     $cliSeen = false;
     $moduleSeen = false;
     foreach ($facts as $key => $value) {
         if (preg_match('/^worker\.([0-9]+)\.kind$/D', $key, $matches) === 1 && $value === $argv[2]) {
             $workerSeen = true;
-            if ($expectedVersionPrefix !== null) {
-                if ($argv[2] === 'fpm') {
-                    // FPM's own binary is invoked directly, so the collector records a full
-                    // dotted version (e.g. "8.2.35") in worker.N.version.
-                    $version = $facts['worker.' . $matches[1] . '.version'] ?? null;
-                    $workerVersionMatchesExpectedPrefix = $workerVersionMatchesExpectedPrefix
-                        || (is_string($version) && str_starts_with($version, $expectedVersionPrefix));
-                } else {
-                    // A live Apache process cannot be asked its own PHP version the way FPM's
-                    // binary can; worker.N.version is intentionally left null for apache workers
-                    // (RuntimeInventoryCollector only computes $versionCandidate for kind=fpm).
-                    // The only real evidence of which PHP branch is loaded is the mod_php
-                    // module's own filename, e.g. libphp8.4.so, in worker.N.apache_php_modules.
-                    $modules = $facts['worker.' . $matches[1] . '.apache_php_modules'] ?? null;
-                    fwrite(STDERR, 'DEBUG apache_php_modules: ' . json_encode($modules) . "\n");
-                    if (is_array($modules)) {
-                        foreach ($modules as $modulePath) {
-                            $workerVersionMatchesExpectedPrefix = $workerVersionMatchesExpectedPrefix
-                                || (is_string($modulePath) && str_contains(basename($modulePath), 'libphp' . $expectedVersionPrefix . '.'));
-                        }
-                    }
-                }
+            if ($expectedVersionPrefix !== null && $argv[2] === 'fpm') {
+                // FPM's own binary is invoked directly, so the collector records a full
+                // dotted version (e.g. "8.2.35") in worker.N.version.
+                $version = $facts['worker.' . $matches[1] . '.version'] ?? null;
+                $fpmWorkerVersionMatches = $fpmWorkerVersionMatches
+                    || (is_string($version) && str_starts_with($version, $expectedVersionPrefix));
             }
         }
-        $cliSeen = $cliSeen || (preg_match('/^runtime\.cli\.[0-9]+\.version$/D', $key) === 1 && is_string($value));
+        if (preg_match('/^runtime\.cli\.[0-9]+\.version$/D', $key) === 1 && is_string($value)) {
+            $cliSeen = true;
+            if ($expectedVersionPrefix !== null) {
+                // A live Apache process cannot be asked its own PHP version the way FPM's binary
+                // can (worker.N.version is intentionally left null for apache workers), and recent
+                // official PHP images load an unversioned libphp.so with no version in the path at
+                // all. Each container image has exactly one PHP installed, so the isolated CLI
+                // probe's own dotted version is reliable evidence of which image actually ran,
+                // for both kinds -- it's the primary check for apache, and corroborates the FPM
+                // worker.N.version check above for fpm.
+                $cliVersionMatches = $cliVersionMatches || str_starts_with($value, $expectedVersionPrefix);
+            }
+        }
         $moduleSeen = $moduleSeen || (str_ends_with($key, '.apache_php_modules') && is_array($value) && $value !== []);
     }
     if (!$workerSeen || !$cliSeen || ($argv[2] === 'apache' && !$moduleSeen) || $assessments === []) {
         throw new RuntimeException('Real worker, isolated CLI probe, or Apache module evidence is missing.');
     }
-    if (!$workerVersionMatchesExpectedPrefix) {
+    if (!$fpmWorkerVersionMatches || !$cliVersionMatches) {
         throw new RuntimeException(sprintf(
-            'Expected the audited %s worker to report version/module evidence for %s; the inventory recorded something else. '
+            'Expected the audited %s container to report version evidence for %s; the inventory recorded something else. '
             . 'A passing disposable check must prove the pinned image version was actually audited, not merely that some worker ran.',
             $argv[2],
             $expectedVersionPrefix,
