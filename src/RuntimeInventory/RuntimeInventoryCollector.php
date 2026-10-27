@@ -669,9 +669,16 @@ final class RuntimeInventoryCollector
                 && $commandIdentity !== 'unknown' && $deletedCandidate === false
                 ? $this->fpmVersionForPath($executableCandidate)
                 : null;
-            $integrityResult = $kind === 'fpm' && $versionCandidate !== null
-                ? $integrity->check($distribution, $manager, $packages, $executableCandidate, $base)
-                : ['provenance' => RuntimePackageProvenance::unknown('runtime_identity_unavailable'), 'sources' => []];
+            $apacheModulePath = $kind === 'apache' && is_array($moduleEvidence['paths']) && count($moduleEvidence['paths']) === 1
+                ? $moduleEvidence['paths'][0]
+                : null;
+            $integrityResult = match (true) {
+                $kind === 'fpm' && $versionCandidate !== null
+                    => $integrity->check($distribution, $manager, $packages, $executableCandidate, $base),
+                $kind === 'apache' && $identityBeforeMatches && $apacheModulePath !== null
+                    => $integrity->checkApacheModule($distribution, $manager, $packages, $apacheModulePath, $moduleEvidence['deleted']),
+                default => ['provenance' => RuntimePackageProvenance::unknown('runtime_identity_unavailable'), 'sources' => []],
+            };
             $provenance = $integrityResult['provenance'];
             foreach ($integrityResult['sources'] as $integritySource) {
                 $provenance['evidence_source_ids'][] = $this->addSource('file', $integritySource['locator'], $integritySource['content']);

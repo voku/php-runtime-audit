@@ -1,0 +1,4 @@
+Package: libapache2-mod-php8.2
+Status: install ok installed
+Architecture: amd64
+Version: 8.2.35-1~deb12u1
