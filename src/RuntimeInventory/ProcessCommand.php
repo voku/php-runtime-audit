@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace voku\PhpRuntimeAudit\RuntimeInventory;
 
 /** Fixed, read-only system commands used by the local collector. */
-enum ProcessCommand: string
+enum ProcessCommand: string implements ProcessCommandSpec
 {
     case PhpUsrBin = 'php-usr-bin';
     case PhpUsrLocalBin = 'php-usr-local-bin';
@@ -30,7 +30,8 @@ enum ProcessCommand: string
     /** @return list<string> */
     public function argv(): array
     {
-        $phpScript = 'echo json_encode(["version" => PHP_VERSION, "sapi" => PHP_SAPI, "extensions" => get_loaded_extensions()], JSON_THROW_ON_ERROR);';
+        // Keep this probe parseable on legacy PHP 5.x targets.
+        $phpScript = 'echo json_encode(["version" => PHP_VERSION, "sapi" => PHP_SAPI, "extensions" => get_loaded_extensions()]);';
 
         return match ($this) {
             self::PhpUsrBin => ['/usr/bin/php', '-n', '-r', $phpScript],
@@ -75,6 +76,11 @@ enum ProcessCommand: string
     public function executablePath(): string
     {
         return $this->argv()[0];
+    }
+
+    public function id(): string
+    {
+        return $this->value;
     }
 
     public function isPhpCli(): bool

@@ -6,5 +6,5 @@ namespace voku\PhpRuntimeAudit\RuntimeInventory;
 
 interface ProcessRunner
 {
-    public function run(ProcessCommand $command): ProcessResult;
+    public function run(ProcessCommandSpec $command): ProcessResult;
 }

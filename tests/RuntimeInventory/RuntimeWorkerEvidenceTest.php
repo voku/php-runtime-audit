@@ -9,6 +9,7 @@ use PHPUnit\Framework\TestCase;
 use voku\PhpRuntimeAudit\Advisories\AdvisoryCatalog;
 use voku\PhpRuntimeAudit\Advisories\AdvisoryEvaluator;
 use voku\PhpRuntimeAudit\RuntimeInventory\FixtureProcessRunner;
+use voku\PhpRuntimeAudit\RuntimeInventory\DiscoveredPhpCommand;
 use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
 
 /**
@@ -48,7 +49,9 @@ final class RuntimeWorkerEvidenceTest extends TestCase
         self::assertNull($inventory['workers'][0]['executable_path']);
         self::assertNull($inventory['workers'][0]['process_start_ticks_since_boot']);
         foreach ((new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load())['assessments'] as $assessment) {
-            self::assertNotSame('verified_fixed', $assessment['patch_status']);
+            if (str_starts_with($assessment['subject_id'], 'worker-') || str_starts_with($assessment['subject_id'], 'apache-')) {
+                self::assertNotSame('verified_fixed', $assessment['patch_status']);
+            }
         }
     }
 
@@ -90,6 +93,54 @@ final class RuntimeWorkerEvidenceTest extends TestCase
             self::assertSame('unknown', $assessment['patch_status']);
             self::assertSame('unknown', $assessment['compromise_evidence']['status']);
         }
+    }
+
+    public function test_side_by_side_fpm_workers_keep_version_specific_config_and_advisory_subjects(): void
+    {
+        if (!is_dir($this->root . '/usr/sbin')) {
+            mkdir($this->root . '/usr/sbin', 0777, true);
+        }
+        file_put_contents($this->root . '/usr/sbin/php-fpm7.4', 'fixture PHP 7.4 FPM');
+        mkdir($this->root . '/proc/124', 0777, true);
+        file_put_contents($this->root . '/proc/124/comm', 'php-fpm7.4');
+        file_put_contents($this->root . '/proc/124/stat', '124 (php-fpm7.4) S 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 12450');
+        file_put_contents($this->root . '/proc/124/cmdline', "/usr/sbin/php-fpm7.4\0--nodaemonize\0");
+        file_put_contents($this->root . '/proc/124/exe', '/usr/sbin/php-fpm7.4');
+        mkdir($this->root . '/etc/php/7.4/fpm', 0777, true);
+        file_put_contents($this->root . '/etc/php/7.4/fpm/php.ini', "session.upload_progress.enabled=1\nsession.serialize_handler=php_serialize\n");
+
+        $commands = json_decode((string) file_get_contents($this->root . '/commands.json'), true, 16, JSON_THROW_ON_ERROR);
+        if (!is_array($commands)
+            || !is_array($commands['commands'] ?? null)
+            || !is_array($commands['commands']['dpkg-packages'] ?? null)
+            || !is_string($commands['commands']['dpkg-packages']['stdout'] ?? null)) {
+            self::fail('Fixture command data is malformed.');
+        }
+        $id = DiscoveredPhpCommand::fromPath('/usr/sbin/php-fpm7.4', 'fpm')->id();
+        $commands['commands'][$id] = ['exit_code' => 0, 'stdout' => 'PHP 7.4.33 (fpm-fcgi) (built: fixture)'];
+        $commands['commands']['dpkg-packages']['stdout'] .= "php7.4-fpm\t7.4.33-1+deb.sury.org+1\n";
+        file_put_contents($this->root . '/commands.json', json_encode($commands, JSON_THROW_ON_ERROR));
+
+        $inventory = $this->collect();
+        $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
+        $workerVersions = [];
+        foreach ($inventory['workers'] as $worker) {
+            $workerVersions[$worker['pid']] = [$worker['id'], $worker['version']];
+        }
+        $assessments = [];
+        foreach ($evaluation['assessments'] as $assessment) {
+            if (str_contains($assessment['record_id'], 'CVE-2026-115560')) {
+                $assessments[$assessment['subject_id']] = $assessment;
+            }
+        }
+
+        self::assertSame('8.2.35', $workerVersions[123][1]);
+        self::assertSame('7.4.33', $workerVersions[124][1]);
+        self::assertNotSame($workerVersions[123][0], $workerVersions[124][0]);
+        self::assertSame('unknown', $assessments[$workerVersions[123][0]]['verdict']);
+        self::assertSame('needs_investigation', $assessments[$workerVersions[124][0]]['verdict']);
+        self::assertSame('unknown', $assessments[$workerVersions[123][0]]['patch_status']);
+        self::assertSame('unknown', $assessments[$workerVersions[124][0]]['patch_status']);
     }
 
     /** @return iterable<string, array{string|null}> */
@@ -146,8 +197,9 @@ final class RuntimeWorkerEvidenceTest extends TestCase
         );
         self::assertSame('unknown', $inventory['configuration_by_sapi']['cli']['session.serialize_handler']['state']);
         foreach ((new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load())['assessments'] as $assessment) {
-            if (str_contains($assessment['record_id'], 'CVE-2026-115560')) {
-                self::assertSame('needs_investigation', $assessment['verdict']);
+            if (str_contains($assessment['record_id'], 'CVE-2026-115560')
+                && str_starts_with($assessment['subject_id'], 'worker-')) {
+                self::assertSame('unknown', $assessment['verdict']);
                 self::assertSame('unknown', $assessment['patch_status']);
                 return;
             }
@@ -205,8 +257,9 @@ final class RuntimeWorkerEvidenceTest extends TestCase
             self::assertSame('unknown', $apacheSetting['state']);
         }
         foreach ((new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load())['assessments'] as $assessment) {
-            if (str_contains($assessment['record_id'], 'CVE-2026-115560')) {
-                self::assertSame('needs_investigation', $assessment['verdict']);
+            if (str_contains($assessment['record_id'], 'CVE-2026-115560')
+                && str_starts_with($assessment['subject_id'], 'worker-')) {
+                self::assertSame('unknown', $assessment['verdict']);
                 self::assertSame('unknown', $assessment['patch_status']);
                 return;
             }

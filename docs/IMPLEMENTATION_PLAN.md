@@ -2,7 +2,7 @@
 
 ## Current delivery status
 
-PRA-1 bootstrap assets are present, but PRA-1 remains `legacy_inferred` and incomplete: it has no Contract, governed Run, or review record. PRA-2 is complete with verification passed and review `ok`. PRA-3 is complete with verification passed and review `warn`; its historical warning remains recorded. PRA-4-MAINLINE is the active runtime/advisory integration slice. The earlier PRA-4 run remains preserved with verification passed and review `warn`. Local and Public MVPs have separate release gates; neither is declared released here.
+PRA-1 bootstrap assets are present, but PRA-1 remains `legacy_inferred` and incomplete: it has no Contract, governed Run, or review record. PRA-2 is complete with verification passed and review `ok`. PRA-3 is complete with verification passed and review `warn`; its historical warning remains recorded. PRA-4-MAINLINE is complete with verification passed and review `warn`; its recorded limitation is fixture-tested PHP 8.5 parity without a real PHP 8.5 container smoke. PRA-4-MULTIRUNTIME extends inventory across legacy and side-by-side PHP installations and must be marked complete only by its governed workflow. The earlier PRA-4 run remains preserved with verification passed and review `warn`. Local and Public MVPs have separate release gates; neither is declared released here.
 
 - **Local MVP:** verified local runtime and patch checks, vendor-backport evidence, three-valued applicability, and reviewable environment-specific remediation instructions. PRA-1, PRA-2, PRA-3, PRA-4, and PRA-5 must complete their canonical workflows.
 - **Public MVP:** verified Local MVP plus PRA-7A documentation and PRA-7B reproducible, independently security-reviewed downloadable bundles.
