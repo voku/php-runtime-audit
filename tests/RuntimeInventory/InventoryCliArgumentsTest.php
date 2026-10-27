@@ -42,7 +42,7 @@ final class InventoryCliArgumentsTest extends TestCase
             self::assertTrue(ftruncate($file, 67_108_864));
             fclose($file);
             $process = proc_open(
-                [PHP_BINARY, '-d', 'memory_limit=16M', $root . '/bin/php-runtime-audit-inventory', '--fixture', $fixture],
+                [PHP_BINARY, '-d', 'memory_limit=16M', '-d', 'register_argc_argv=1', $root . '/bin/php-runtime-audit-inventory', '--fixture', $fixture],
                 [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
                 $pipes,
                 $root,
