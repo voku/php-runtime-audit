@@ -1,0 +1,59 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use voku\PhpRuntimeAudit\Advisories\AdvisoryCatalog;
+use voku\PhpRuntimeAudit\Advisories\AdvisoryEvaluator;
+use voku\PhpRuntimeAudit\Advisories\RuntimeAuditReportBuilder;
+use voku\PhpRuntimeAudit\RuntimeInventory\FixtureProcessRunner;
+use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
+use voku\PhpRuntimeAudit\RuntimeInventory\SystemProcessRunner;
+
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+function usage(): string
+{
+    return "Usage: php bin/php-runtime-audit-inventory [--fixture <offline-fixture-directory>]\n";
+}
+
+try {
+    if (PHP_SAPI !== 'cli' || !isset($argc, $argv) || $argc !== count($argv)) {
+        throw new RuntimeException('CLI argument capture is unavailable; enable register_argc_argv for this command.');
+    }
+    $fixture = null;
+    for ($index = 1; $index < $argc; ++$index) {
+        if ($argv[$index] === '--help') {
+            fwrite(STDOUT, usage());
+            exit(0);
+        }
+        if ($argv[$index] === '--fixture' && isset($argv[$index + 1]) && $fixture === null) {
+            $fixture = $argv[++$index];
+            continue;
+        }
+        throw new RuntimeException('Unsupported or repeated command-line option.');
+    }
+
+    if ($fixture !== null) {
+        $fixtureRoot = realpath($fixture);
+        if ($fixtureRoot === false || !is_dir($fixtureRoot)) {
+            throw new RuntimeException('Fixture path must be an existing directory.');
+        }
+        $runner = new FixtureProcessRunner($fixtureRoot);
+        $root = $fixtureRoot;
+    } else {
+        $runner = new SystemProcessRunner();
+        $root = '/';
+    }
+
+    $inventory = (new RuntimeInventoryCollector($runner, $root))->collect();
+    $catalog = AdvisoryCatalog::load();
+    $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, $catalog);
+    $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+    fwrite(STDOUT, json_encode($report, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+} catch (Throwable $error) {
+    fwrite(STDERR, 'php-runtime-audit-inventory: ' . $error->getMessage() . "\n");
+    exit(2);
+}
+
+exit(0);
