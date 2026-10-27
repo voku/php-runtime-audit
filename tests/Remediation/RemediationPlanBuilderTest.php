@@ -10,9 +10,13 @@ use voku\PhpRuntimeAudit\Advisories\AdvisoryEvaluator;
 use voku\PhpRuntimeAudit\Advisories\RuntimeAuditReportBuilder;
 use voku\PhpRuntimeAudit\Remediation\RemediationActionKind;
 use voku\PhpRuntimeAudit\Remediation\RemediationPlanBuilder;
+use voku\PhpRuntimeAudit\Remediation\RemediationPlan;
 use voku\PhpRuntimeAudit\RuntimeInventory\FixtureProcessRunner;
 use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
 
+/**
+ * @phpstan-import-type RuntimeInventory from RuntimeInventoryCollector
+ */
 final class RemediationPlanBuilderTest extends TestCase
 {
     public function test_verified_fixed_package_produces_no_action_required_with_no_approval_gap(): void
@@ -103,8 +107,12 @@ final class RemediationPlanBuilderTest extends TestCase
 
         $knownFactIds = [];
         foreach ($report['records'] as $record) {
-            if (($record['record_type'] ?? null) === 'observation') {
-                foreach ($record['facts'] as $fact) {
+            $facts = ($record['record_type'] ?? null) === 'observation' ? ($record['facts'] ?? null) : null;
+            if (!is_array($facts)) {
+                continue;
+            }
+            foreach ($facts as $fact) {
+                if (is_array($fact) && is_string($fact['fact_id'] ?? null)) {
                     $knownFactIds[$fact['fact_id']] = true;
                 }
             }
@@ -133,7 +141,7 @@ final class RemediationPlanBuilderTest extends TestCase
         }
     }
 
-    private function buildPlanFor(string $fixture): \voku\PhpRuntimeAudit\Remediation\RemediationPlan
+    private function buildPlanFor(string $fixture): RemediationPlan
     {
         $inventory = $this->collectInventory($fixture);
         $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
@@ -142,7 +150,7 @@ final class RemediationPlanBuilderTest extends TestCase
         return (new RemediationPlanBuilder())->build($report);
     }
 
-    /** @return array<string, mixed> */
+    /** @phpstan-return RuntimeInventory */
     private function collectInventory(string $name): array
     {
         $root = dirname(__DIR__) . '/fixtures/runtime/' . $name;

@@ -50,13 +50,15 @@ final class RemediationPlanBuilder
             if (!is_array($record) || ($record['record_type'] ?? null) !== 'assessment') {
                 continue;
             }
+            /** @var array<string, mixed> $record */
             $action = $this->buildAction($record, $facts, $advisoriesByCve, $warnings);
             if ($action !== null) {
                 $actions[] = $action;
             }
         }
 
-        $distribution = $report['summary']['distribution'] ?? null;
+        $summary = $report['summary'] ?? null;
+        $distribution = is_array($summary) ? ($summary['distribution'] ?? null) : null;
 
         return new RemediationPlan(
             gmdate('Y-m-d\TH:i:s\Z'),

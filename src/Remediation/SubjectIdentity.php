@@ -29,9 +29,7 @@ final readonly class SubjectIdentity
     {
         $byKey = [];
         foreach ($facts as $fact) {
-            if (is_string($fact['key'] ?? null)) {
-                $byKey[$fact['key']] = $fact;
-            }
+            $byKey[$fact['key']] = $fact;
         }
 
         if ($subjectId === 'local-host') {
@@ -80,7 +78,7 @@ final readonly class SubjectIdentity
             $evidenceIds = [];
             foreach ($evidenceSuffixes as $suffix) {
                 $sibling = $byKey[$itemPrefix . $suffix] ?? null;
-                if (is_array($sibling) && is_string($sibling['fact_id'] ?? null)) {
+                if ($sibling !== null) {
                     $evidenceIds[] = $sibling['fact_id'];
                 }
             }
@@ -130,9 +128,9 @@ final readonly class SubjectIdentity
             }
             $itemPrefix = substr($key, 0, -strlen('.id'));
             $modulesFact = $byKey[$itemPrefix . '.apache_php_modules'] ?? null;
-            $modules = is_array($modulesFact) && is_array($modulesFact['value'] ?? null) ? $modulesFact['value'] : [];
+            $modules = $modulesFact !== null && is_array($modulesFact['value']) ? $modulesFact['value'] : [];
             $modulePath = is_string($modules[$moduleIndex] ?? null) ? $modules[$moduleIndex] : null;
-            $evidenceIds = is_array($modulesFact) && is_string($modulesFact['fact_id'] ?? null) ? [$modulesFact['fact_id']] : [];
+            $evidenceIds = $modulesFact !== null ? [$modulesFact['fact_id']] : [];
 
             return new self(
                 'apache-module',

@@ -116,10 +116,10 @@ final class RemediationReportCliTest extends TestCase
     private function decodeJsonObject(string $json): array
     {
         $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
-        if (!is_array($decoded)) {
+        if (!is_array($decoded) || array_is_list($decoded)) {
             self::fail('Expected the CLI to print a JSON object.');
         }
-
+        /** @var array<string, mixed> $decoded */
         return $decoded;
     }
 
