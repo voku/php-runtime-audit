@@ -63,6 +63,7 @@ try {
                     // The only real evidence of which PHP branch is loaded is the mod_php
                     // module's own filename, e.g. libphp8.4.so, in worker.N.apache_php_modules.
                     $modules = $facts['worker.' . $matches[1] . '.apache_php_modules'] ?? null;
+                    fwrite(STDERR, 'DEBUG apache_php_modules: ' . json_encode($modules) . "\n");
                     if (is_array($modules)) {
                         foreach ($modules as $modulePath) {
                             $workerVersionMatchesExpectedPrefix = $workerVersionMatchesExpectedPrefix
