@@ -77,6 +77,7 @@ run_fixture() {
         docker_local logs "$container" >&2
         exit 1
     fi
+    docker_local exec "$container" php -r 'var_dump(PHP_VERSION, PHP_SAPI, ini_get("register_argc_argv"), isset($argc) ? $argc : "unset", isset($argv) ? $argv : "unset");' >&2 || true
     docker_local exec --workdir /audit "$container" php bin/php-runtime-audit-inventory \
         >"$fixture_dir/$label.json"
     php "$project_root/tests/fixtures/runtime/assert-disposable-report.php" \
