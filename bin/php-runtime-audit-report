@@ -1,0 +1,73 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use voku\PhpRuntimeAudit\Evidence\DuplicateJsonKeyGuard;
+use voku\PhpRuntimeAudit\Remediation\RemediationPlanBuilder;
+use voku\PhpRuntimeAudit\Remediation\RemediationReportMarkdownRenderer;
+
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+const MAX_INPUT_BYTES = 1_048_576;
+
+function usage(): string
+{
+    return "Usage: php bin/php-runtime-audit-inventory | php bin/php-runtime-audit-report [--report <path>]\n"
+        . "Reads a runtime audit report (as produced by php bin/php-runtime-audit-inventory) on stdin\n"
+        . "and writes a remediation plan as JSON to stdout. This never executes, restarts, installs,\n"
+        . "or modifies anything; every proposal requires explicit human approval and review.\n";
+}
+
+try {
+    $rawArguments = $_SERVER['argv'] ?? [];
+    $arguments = [];
+    if (is_array($rawArguments)) {
+        foreach ($rawArguments as $argument) {
+            if (is_string($argument)) {
+                $arguments[] = $argument;
+            }
+        }
+    }
+    $arguments = array_slice($arguments, 1);
+
+    $reportPath = null;
+    for ($index = 0; $index < count($arguments); ++$index) {
+        if ($arguments[$index] === '--help') {
+            fwrite(STDOUT, usage());
+            exit(0);
+        }
+        if ($arguments[$index] === '--report' && isset($arguments[$index + 1]) && $reportPath === null) {
+            $reportPath = $arguments[++$index];
+            continue;
+        }
+        throw new RuntimeException('Unsupported or repeated command-line option.');
+    }
+    if ($reportPath !== null && (is_link($reportPath) || str_contains($reportPath, "\0"))) {
+        throw new RuntimeException('The --report path must not be a symlink.');
+    }
+
+    $input = stream_get_contents(STDIN, MAX_INPUT_BYTES + 1);
+    if (!is_string($input) || $input === '' || strlen($input) > MAX_INPUT_BYTES) {
+        throw new RuntimeException(sprintf('Input on stdin must be a non-empty runtime audit report of at most %d bytes.', MAX_INPUT_BYTES));
+    }
+    DuplicateJsonKeyGuard::assertNoDuplicates($input);
+    $report = json_decode($input, true, 512, JSON_THROW_ON_ERROR);
+    if (!is_array($report)) {
+        throw new RuntimeException('Input must be a JSON object.');
+    }
+    /** @var array<string, mixed> $report */
+    $plan = (new RemediationPlanBuilder())->build($report);
+    $json = json_encode($plan->toArray(), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    fwrite(STDOUT, $json . "\n");
+
+    if ($reportPath !== null) {
+        $markdown = (new RemediationReportMarkdownRenderer())->render($plan);
+        if (@file_put_contents($reportPath, $markdown) === false) {
+            throw new RuntimeException('Unable to write the Markdown report to the given --report path.');
+        }
+    }
+} catch (Throwable $exception) {
+    fwrite(STDERR, 'php-runtime-audit-report: ' . $exception->getMessage() . "\n");
+    exit(2);
+}
