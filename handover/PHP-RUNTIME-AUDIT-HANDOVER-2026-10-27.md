@@ -1,15 +1,26 @@
 # PHP Runtime Audit handover — 2026-10-27
 
+## Live GitHub update — 2026-10-27 15:54 UTC
+
+GitHub moved after this handover was first pushed:
+
+- PR #7 merged as `8e1d1e253158f6f65e7612fcd05cd37d615e3bb8`. It includes Claude's follow-up commit `27695c2487997a7a987b4a978d825d54e72c0241`, which corrected CLI runtime advisory `source_fact_id` binding.
+- Claude's PR #9 merged as `7bf4c060b6175b857baebfa6a701f3083cab97a3`. It adds real, pinned PHP 8.5 FPM/Apache coverage and confirms the audited image version in the report. Exact-head Actions run `40534732472` passed all consumer jobs; its disposable script covers PHP 8.2 FPM, 8.4 Apache, and PHP 8.5 FPM/Apache.
+- Current GitHub `main` is `7bf4c060b6175b857baebfa6a701f3083cab97a3`. PR #8 remains the open draft handover.
+- The owner-side PRA-4-MULTIRUNTIME Run read from the original workspace remains attempt 1 at `build`, candidate still the approved base, with only `investigate` accepted. `agent-loop enter` still directs host work; `pipeline status` still cannot acquire the root-owned lock. Green CI and merged PRs have not recorded the missing governed candidate observation, validations, reviews, verification, or closeout.
+
+This update supersedes the earlier GitHub PR and CI status below. The archived Run/Contract files remain a point-in-time snapshot and the live `.agent-loop` state remains authoritative.
+
 This handover is for the next coding agent taking over PHP Runtime Audit. Lars has authorized continuing the current approved work and using GitHub CI. The goal remains the first Local MVP, but **the project is not done**: only report it done when the canonical agent-loop workflow says the exact merged candidate is complete.
 
 ## Repositories and live GitHub state
 
 - Repository: <https://github.com/voku/php-runtime-audit>
 - `main` base for the active candidate: `0b5e2c0c087710da6ec25c5510f7f830c602ae33`.
-- Runtime candidate commit: `fe9c8f901b16c49b51102c7fc44d2e76d991b5a8`, tree `ed953bb046ba0f6df2f86af219ca672e390aab86` (`feat: inventory multiple PHP runtimes safely`). It is pushed on `codex/pra4-multiruntime-candidate` and proposed as draft [PR #7](https://github.com/voku/php-runtime-audit/pull/7).
-- Handover/evidence branch: `handover/pra4-multiruntime-20261027`, proposed as draft [PR #8](https://github.com/voku/php-runtime-audit/pull/8). It carries this document and an archival copy of the current Contract, Run, session, and Contract history. It is not product scope and should not be merged as a substitute for the active execution pipeline.
-- PR #7 is a transport and CI checkpoint, **not** an accepted agent-loop candidate. Do not merge it just because Actions are green. No correctness review, blind-spot review, deterministic verification, or closeout has been accepted for commit `fe9c8f9`.
-- Before taking action, refresh GitHub state and exact-head CI. Workflow run `40488953603` completed successfully on exact head `fe9c8f901b16c49b51102c7fc44d2e76d991b5a8`: PHP 8.2 production smoke passed; PHP 8.4 passed the real isolated FPM/Apache worker check; PHP 8.3 and 8.5 consumer jobs passed with that worker check skipped. All other consumer steps passed in the three jobs. The local disposable-runtime script remains blocked by the full filesystem. See <https://github.com/voku/php-runtime-audit/actions/runs/40488953603>.
+- Runtime candidate commit `fe9c8f901b16c49b51102c7fc44d2e76d991b5a8` (tree `ed953bb046ba0f6df2f86af219ca672e390aab86`) and Claude's fix `27695c2487997a7a987b4a978d825d54e72c0241` are merged through [PR #7](https://github.com/voku/php-runtime-audit/pull/7), merge commit `8e1d1e253158f6f65e7612fcd05cd37d615e3bb8`.
+- Handover/evidence branch: `handover/pra4-multiruntime-20261027`, still proposed as draft [PR #8](https://github.com/voku/php-runtime-audit/pull/8). It carries this document and an archival copy of the current Contract, Run, session, and Contract history. It is not product scope and should not be merged as a substitute for the active execution pipeline.
+- PR #7 has merged, but its merge is **not** an accepted agent-loop candidate. No correctness review, blind-spot review, deterministic verification, or closeout has been accepted for the merged candidate.
+- PR #9's exact-head Actions run `40534732472` passed. The real-container script checked pinned PHP 8.2 FPM, PHP 8.4 Apache, PHP 8.5 FPM, and PHP 8.5 Apache images, with observed version evidence asserted. See <https://github.com/voku/php-runtime-audit/actions/runs/40534732472>. The local Docker command remains blocked by the full filesystem.
 
 ## Canonical workflow state
 
@@ -50,7 +61,7 @@ The exact PR #7 commit was locally checked on PHP 8.4.26:
 - `git diff --check` — exit 0.
 - `bash tests/fixtures/runtime/run-disposable-runtime-checks.sh` — exit 125 because Docker reported `no space left on device` while creating the container.
 
-The first PHPStan and formatting runs found real issues in the recovered copy; those were fixed and the checks rerun successfully. They were not suppressed. The duplicate Remi regression-test declaration introduced during recovery was also removed before commit and tests passed afterward. Treat the results above as direct local evidence for the PR commit only; agent-loop still records these Contract validations as missing.
+The first PHPStan and formatting runs found real issues in the recovered copy; those were fixed and the checks rerun successfully. They were not suppressed. The duplicate Remi regression-test declaration introduced during recovery was also removed before commit and tests passed afterward. Treat these as direct local evidence for commit `fe9c8f9` only. Claude's follow-up commit and PR #9 have their own successful GitHub CI evidence. Agent-loop still records the Contract validations as missing.
 
 ## Independent review notes (not accepted workflow evidence)
 
@@ -64,12 +75,12 @@ These notes were not submitted as accepted correctness or blind-spot stages. All
 
 ## Immediate next steps for the receiving agent
 
-1. Verify GitHub PR #7, workflow run 40488953603, PR #8 for this handover, and their current exact head SHAs.
+1. Verify current `main`, merged PRs #7 and #9, Actions run 40534732472, and open handover PR #8.
 2. Reattach or reopen the original workspace so the live owner-side `.agent-loop` state and lock are writable by the authorized user. Preserve all worktrees. The current `/workspace` is full; do not free space by deleting project or evidence files.
 3. Run `agent-loop enter PRA-4-MULTIRUNTIME --format=json` and follow its current canonical next action. Use a supported v0.20.72+ pipeline workspace route for the exact candidate if the current CLI documents it. Register the actual source candidate and candidate observation under the existing Run/Contract; do not substitute this handover snapshot or create a new Run.
 4. Run every Contract validation against the registered exact candidate. Reattempt the disposable runtime smoke when the environment has space, and record any genuine environment limitation without calling it a pass.
 5. Obtain fresh correctness and blind-spot reviews in distinct contexts on that exact candidate, resolve findings through the governed build flow, then run deterministic verification and `agent-loop finish` through completion. Keep PRA-4-MAINLINE's prior warning about absent real PHP 8.5 container smoke accurately recorded.
-6. Keep PR #7 draft until the canonical workflow permits promotion. Inspect every Actions job at the candidate head; merge only after the canonical Run says complete and all required gates pass.
+6. PR #7 and PR #9 are already merged. Do not use those merges as a substitute for the existing Run's missing evidence. Inspect the exact merged candidate and follow the current agent-loop closeout route; do not create a replacement Run.
 7. Then proceed to the already approved Local MVP work. PRA-5 remediation plans remain required before Local MVP completion. Do not start PRA-3A or public-release work unless a new Contract authorizes it.
 
 ## Release state
