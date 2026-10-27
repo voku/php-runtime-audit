@@ -2,7 +2,29 @@
   "name": "voku/php-runtime-audit",
   "description": "Local-first PHP runtime and patch evidence audit with AI-ready remediation plans.",
   "type": "project",
+  "keywords": [
+    "security",
+    "audit",
+    "php",
+    "cve",
+    "vulnerability",
+    "runtime",
+    "patch-verification",
+    "incident-response"
+  ],
+  "homepage": "https://github.com/voku/php-runtime-audit",
   "license": "MIT",
+  "authors": [
+    {
+      "name": "Lars Moelleken",
+      "homepage": "https://github.com/voku"
+    }
+  ],
+  "support": {
+    "issues": "https://github.com/voku/php-runtime-audit/issues",
+    "source": "https://github.com/voku/php-runtime-audit",
+    "security": "https://github.com/voku/php-runtime-audit/security/policy"
+  },
   "require": {
     "php": "^8.2",
     "ext-json": "*",

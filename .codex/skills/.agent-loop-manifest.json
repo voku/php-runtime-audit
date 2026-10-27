@@ -230,7 +230,7 @@
             "target": "php-runtime-audit",
             "source_id": "project:skill:php-runtime-audit",
             "semantic_owner": "project",
-            "source_path": "/workspace/php-runtime-audit-pra2-candidate-corrected/resources/skills/php-runtime-audit",
+            "source_path": "/home/user/php-runtime-audit/resources/skills/php-runtime-audit",
             "source_reference": null,
             "source_sha256": "sha256:b1e295d3c8bb2fa0db7912760f0ab6ee33011559608b0fa9585d9b4fbf4ac2a1",
             "representation_sha256": "sha256:b1e295d3c8bb2fa0db7912760f0ab6ee33011559608b0fa9585d9b4fbf4ac2a1",
