@@ -206,14 +206,24 @@ final class AdvisoryEvaluator
                 continue;
             }
             foreach ($worker['apache_php_modules'] as $moduleIndex => $modulePath) {
+                // The loaded module's filename does not reliably encode its version (modern
+                // builds ship an unversioned libphp.so); dpkg-confirmed provenance of the exact
+                // loaded path is authoritative when available, with the filename guess as a
+                // fallback for hosts without local package-database confirmation.
+                $moduleProvenance = $worker['package_provenance']['verified']
+                    && $worker['package_provenance']['executable_path'] === $modulePath;
                 $moduleName = basename($modulePath);
-                $packageName = preg_match('/\Alibphp([0-9]+\.[0-9]+)\.so\z/', $moduleName, $matches) === 1
-                    ? 'libapache2-mod-php' . $matches[1]
-                    : null;
+                $packageName = $moduleProvenance
+                    ? $worker['package_provenance']['package_name']
+                    : (preg_match('/\Alibphp([0-9]+\.[0-9]+)\.so\z/', $moduleName, $matches) === 1
+                        ? 'libapache2-mod-php' . $matches[1]
+                        : null);
                 $package = $this->findPackage($packages, $packageName);
                 $targets[] = [
-                    'provenance_verified' => false,
-                    'provenance_fact_id' => null,
+                    'provenance_verified' => $moduleProvenance
+                        && $package !== null
+                        && $package['version'] === $worker['package_provenance']['package_version'],
+                    'provenance_fact_id' => $this->factId($facts, 'worker.' . $workerIndex . '.package_provenance'),
                     'id' => 'apache-' . $worker['pid'] . '-' . ($worker['process_start_ticks_since_boot'] ?? 'unknown') . '-' . ($moduleIndex + 1),
                     'subject_id' => 'apache-' . $worker['pid'] . '-' . ($worker['process_start_ticks_since_boot'] ?? 'unknown') . '-' . ($moduleIndex + 1),
                     'kind' => 'apache-mod-php',
@@ -380,9 +390,20 @@ final class AdvisoryEvaluator
                     $branches[$branch] = true;
                 }
             } elseif ($worker['apache_php_modules'] !== null) {
+                $resolved = false;
                 foreach ($worker['apache_php_modules'] as $modulePath) {
                     if (preg_match('/\Alibphp([0-9]+\.[0-9]+)\.so\z/', basename($modulePath), $matches) === 1) {
                         $branches[$matches[1]] = true;
+                        $resolved = true;
+                    }
+                }
+                // Filename-based detection fails on unversioned module builds (e.g. libphp.so);
+                // fall back to a dpkg-confirmed provenance match for the exact loaded module.
+                if (!$resolved && $worker['package_provenance']['verified']
+                    && in_array($worker['package_provenance']['executable_path'], $worker['apache_php_modules'], true)) {
+                    $branch = $this->versionBranch($worker['package_provenance']['package_version']);
+                    if ($branch !== null) {
+                        $branches[$branch] = true;
                     }
                 }
             }

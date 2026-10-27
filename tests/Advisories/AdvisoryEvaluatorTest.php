@@ -278,6 +278,32 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertSame('unknown', $assessment['patch_status']);
     }
 
+    public function test_unversioned_apache_module_resolves_package_identity_via_dpkg_provenance_without_claiming_a_fix(): void
+    {
+        [$inventory, $evaluation] = $this->evaluate('synthetic-debian-apache-integrity');
+        $worker = $inventory['workers'][0];
+        self::assertSame('apache', $worker['kind']);
+        self::assertSame(['/usr/lib/apache2/modules/libphp.so'], $worker['apache_php_modules']);
+        self::assertTrue($worker['package_provenance']['verified']);
+
+        $assessment = $this->assessmentMap($evaluation);
+
+        // The filename alone cannot identify the module's package or version, so no patch
+        // status is ever claimed from it; only the evidence cited in the rationale improves.
+        self::assertSame('unknown', $assessment['CVE-2026-109618']['patch_status']);
+        self::assertStringContainsString('Package: libapache2-mod-php8.2 8.2.35-1~deb12u1.', $assessment['CVE-2026-109618']['rationale']);
+    }
+
+    public function test_fpm_branches_falls_back_to_verified_provenance_for_an_unversioned_apache_module(): void
+    {
+        $inventory = $this->collectInventory('synthetic-debian-apache-integrity');
+        self::assertTrue($inventory['workers'][0]['package_provenance']['verified']);
+
+        $method = new \ReflectionMethod(AdvisoryEvaluator::class, 'fpmBranches');
+        $method->setAccessible(true);
+        self::assertSame(['8.2'], $method->invoke(new AdvisoryEvaluator(), $inventory));
+    }
+
     public function test_deleted_fpm_worker_and_package_runtime_conflict_stay_unknown(): void
     {
         [, $deletedEvaluation] = $this->evaluate('deleted-worker');
