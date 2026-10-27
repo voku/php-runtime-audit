@@ -19,6 +19,7 @@ try {
         || ($report['summary']['compromise_evidence'] ?? null) !== 'unknown') {
         throw new RuntimeException('Expected a bounded container report with real web workers and separate compromise uncertainty.');
     }
+    $expectedVersionPrefix = isset($argv[3]) && $argv[3] !== '' ? $argv[3] : null;
     $facts = [];
     $assessments = [];
     foreach ($report['records'] as $record) {
@@ -42,15 +43,31 @@ try {
         }
     }
     $workerSeen = false;
+    $workerVersionMatchesExpectedPrefix = $expectedVersionPrefix === null;
     $cliSeen = false;
     $moduleSeen = false;
     foreach ($facts as $key => $value) {
-        $workerSeen = $workerSeen || (preg_match('/^worker\.[0-9]+\.kind$/D', $key) === 1 && $value === $argv[2]);
+        if (preg_match('/^worker\.([0-9]+)\.kind$/D', $key, $matches) === 1 && $value === $argv[2]) {
+            $workerSeen = true;
+            if ($expectedVersionPrefix !== null) {
+                $version = $facts['worker.' . $matches[1] . '.version'] ?? null;
+                $workerVersionMatchesExpectedPrefix = $workerVersionMatchesExpectedPrefix
+                    || (is_string($version) && str_starts_with($version, $expectedVersionPrefix));
+            }
+        }
         $cliSeen = $cliSeen || (preg_match('/^runtime\.cli\.[0-9]+\.version$/D', $key) === 1 && is_string($value));
         $moduleSeen = $moduleSeen || (str_ends_with($key, '.apache_php_modules') && is_array($value) && $value !== []);
     }
     if (!$workerSeen || !$cliSeen || ($argv[2] === 'apache' && !$moduleSeen) || $assessments === []) {
         throw new RuntimeException('Real worker, isolated CLI probe, or Apache module evidence is missing.');
+    }
+    if (!$workerVersionMatchesExpectedPrefix) {
+        throw new RuntimeException(sprintf(
+            'Expected the audited %s worker version to start with %s; the inventory recorded a different version. '
+            . 'A passing disposable check must prove the pinned image version was actually audited, not merely that some worker ran.',
+            $argv[2],
+            $expectedVersionPrefix,
+        ));
     }
     if ($argv[2] === 'fpm') {
         $setting = $facts['configuration.fpm.session.serialize_handler'] ?? null;
@@ -67,7 +84,8 @@ try {
             throw new RuntimeException('Official FPM pool override was omitted or its operational risk was conflated with patch status.');
         }
     }
-    echo $argv[2], ': real worker/CLI evidence and vendor uncertainty verified; ',
+    echo $argv[2], ' (audited-runtime-version ', $expectedVersionPrefix ?? 'unpinned', '*): ',
+    'real worker/CLI evidence and vendor uncertainty verified; ',
     (string) $report['summary']['web_worker_count'], " workers.\n";
 } catch (Throwable $error) {
     fwrite(STDERR, 'Disposable runtime check failed: ' . $error->getMessage() . "\n");
