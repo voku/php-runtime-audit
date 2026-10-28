@@ -40,6 +40,19 @@ jobs:
           sudo service php8.3-fpm start
           pgrep -x php-fpm8.3 >/dev/null
           echo 'Installed and started an actual Ubuntu php8.3-fpm worker via its distro package.'
+      - name: Verify bounded direct dpkg status read against installed package (research only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          mkdir -p host-dogfood-results
+          php -n tools/host-dogfood/dpkg-status-probe.php --self-test
+          # The package-manager command is an independent CI control,
+          # NOT executed by the product collector or the file-only probe.
+          export PRA_EXPECTED_DPKG_VERSION="$(dpkg-query -W -f='\${Version}' php8.3-fpm)"
+          test -n "$PRA_EXPECTED_DPKG_VERSION"
+          php -n tools/host-dogfood/dpkg-status-probe.php --host > host-dogfood-results/dpkg-file-probe.json
+          cat host-dogfood-results/dpkg-file-probe.json
       - name: Build PHAR from exact checked-out source
         run: php -d phar.readonly=0 tools/build-phar.php "$RUNNER_TEMP/php-runtime-audit.phar"
       - name: Audit actual host and emit sanitized evidence only
@@ -72,6 +85,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: first-host-dogfood-${{ github.event.pull_request.head.sha || github.sha }}
-          path: host-dogfood-results/summary.json
+          path: |
+            host-dogfood-results/summary.json
+            host-dogfood-results/dpkg-file-probe.json
           if-no-files-found: warn
           retention-days: 14

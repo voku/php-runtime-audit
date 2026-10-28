@@ -21,3 +21,21 @@ backports still require a separate operator-run proof on a real target.
 **Workflow scope:** experiment only. This separate draft PR targets the PRA-4
 feature branch, keeps PR #13 untouched, and should not be merged into
 the product until its own evidence is reviewed.
+
+## Read-only dpkg fallback feasibility test
+
+This experiment additionally reads the runner's actual `/var/lib/dpkg/status`
+with an 8 MiB cap, regular-file/inode checks, duplicate-target rejection and
+no symlink traversal. A separate CI control runs `dpkg-query` after package
+installation and compares only in memory. The file-only PHP probe makes **no
+network requests or subprocess calls**, regardless of whether `unshare`
+works. Negative tests cover duplicate records, missing/conflicting metadata,
+malformed versions, symlinks and oversized status files.
+
+Only boolean agreement is published; package versions, identities and raw
+status contents stay on the ephemeral runner. This validates that **some
+installed-package evidence is recoverable** on namespace-restricted hosts.
+It does **not** authenticate the dpkg database, prove live PHP worker
+identity, establish a vendor backport or change any security assessment.
+Do not integrate this research parser directly into the production collector
+without a separately approved Contract, review and hostile-file testing.
