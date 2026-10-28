@@ -51,7 +51,7 @@ jobs:
           # NOT executed by the product collector or the file-only probe.
           export PRA_EXPECTED_DPKG_VERSION="$(dpkg-query -W -f='${Version}' php8.3-fpm)"
           test -n "$PRA_EXPECTED_DPKG_VERSION"
-          php -n tools/host-dogfood/dpkg-status-probe.php --host > host-dogfood-results/dpkg-file-probe.json
+          php -n -d display_errors=stderr -d log_errors=1 -d error_reporting=-1 tools/host-dogfood/dpkg-status-probe.php --host > host-dogfood-results/dpkg-file-probe.json
           cat host-dogfood-results/dpkg-file-probe.json
       - name: Build PHAR from exact checked-out source
         run: php -d phar.readonly=0 tools/build-phar.php "$RUNNER_TEMP/php-runtime-audit.phar"
