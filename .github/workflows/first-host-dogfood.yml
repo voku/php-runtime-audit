@@ -1,0 +1,70 @@
+name: First Linux host dogfood (ephemeral)
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/first-host-dogfood.yml'
+      - 'tools/host-dogfood/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu-fpm:
+    # Never run potentially privileged setup on an untrusted fork head.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - name: Checkout exact experiment head, no stored credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Configure PHP 8.3 and Composer
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          coverage: none
+      - name: Install production dependencies
+        run: composer install --no-dev --no-plugins --no-scripts --no-interaction --prefer-dist --no-progress
+      - name: Install and start real Ubuntu FPM package
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq php8.3-fpm >/dev/null
+          sudo service php8.3-fpm start
+          pgrep -x php-fpm8.3 >/dev/null
+          echo 'Installed and started an actual Ubuntu php8.3-fpm worker via its distro package.'
+      - name: Build PHAR from exact checked-out source
+        run: php -d phar.readonly=0 tools/build-phar.php "$RUNNER_TEMP/php-runtime-audit.phar"
+      - name: Audit actual host and emit sanitized evidence only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          mkdir -p "$RUNNER_TEMP/pra-private" host-dogfood-results
+          # These raw reports are private to this ephemeral runner and never uploaded.
+          timeout 75s php "$RUNNER_TEMP/php-runtime-audit.phar" inventory > "$RUNNER_TEMP/pra-private/inventory.json"
+          timeout 45s php "$RUNNER_TEMP/php-runtime-audit.phar" report --report "$RUNNER_TEMP/pra-private/report.md" \
+            < "$RUNNER_TEMP/pra-private/inventory.json" > "$RUNNER_TEMP/pra-private/plan.json"
+          php tools/host-dogfood/summarize.php \
+            "$RUNNER_TEMP/pra-private/inventory.json" \
+            "$RUNNER_TEMP/pra-private/plan.json" \
+            > host-dogfood-results/summary.json
+          cat host-dogfood-results/summary.json
+      - name: Stop the ephemeral FPM service
+        if: always()
+        run: sudo service php8.3-fpm stop || true
+      - name: Upload summary (never raw inventory, PIDs, paths, config or remediation)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: first-host-dogfood-${{ github.event.pull_request.head.sha || github.sha }}
+          path: host-dogfood-results/summary.json
+          if-no-files-found: warn
+          retention-days: 14
