@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace voku\PhpRuntimeAudit\Tests\Remediation;
 
 use PHPUnit\Framework\TestCase;
+use voku\PhpRuntimeAudit\Advisories\RuntimeAuditReportBuilder;
 
 final class RemediationReportCliTest extends TestCase
 {
@@ -48,10 +49,73 @@ final class RemediationReportCliTest extends TestCase
     public function test_oversized_stdin_is_rejected(): void
     {
         $root = dirname(__DIR__, 2);
-        $result = $this->runCli([PHP_BINARY, $root . '/bin/php-runtime-audit-report'], str_repeat('a', 1_048_577));
+        $inputPath = tempnam(sys_get_temp_dir(), 'pra5-oversized-input-');
+        if ($inputPath === false) {
+            self::fail('Unable to create temporary input file.');
+        }
+        $input = fopen($inputPath, 'wb');
+        if (!is_resource($input)) {
+            @unlink($inputPath);
+            self::fail('Unable to open temporary input file.');
+        }
+        self::assertTrue(ftruncate($input, RuntimeAuditReportBuilder::MAX_REPORT_BYTES + 1));
+        fclose($input);
 
-        self::assertSame(2, $result['exit']);
-        self::assertStringContainsString('must be a non-empty runtime audit report', $result['stderr']);
+        try {
+            $result = $this->runCliWithInputFile([PHP_BINARY, $root . '/bin/php-runtime-audit-report'], $inputPath);
+
+            self::assertSame(2, $result['exit']);
+            self::assertStringContainsString('must be a non-empty runtime audit report', $result['stderr']);
+            self::assertStringContainsString((string) RuntimeAuditReportBuilder::MAX_REPORT_BYTES, $result['stderr']);
+        } finally {
+            @unlink($inputPath);
+        }
+    }
+
+    public function test_maximum_size_report_with_producer_terminal_newline_is_accepted(): void
+    {
+        $root = dirname(__DIR__, 2);
+        $inputPath = tempnam(sys_get_temp_dir(), 'pra5-maximum-input-');
+        if ($inputPath === false) {
+            self::fail('Unable to create temporary input file.');
+        }
+        $input = fopen($inputPath, 'wb');
+        if (!is_resource($input)) {
+            @unlink($inputPath);
+            self::fail('Unable to open temporary input file.');
+        }
+
+        try {
+            $json = '{"records":[]}';
+            self::assertSame(strlen($json), fwrite($input, $json));
+            $remainingBytes = RuntimeAuditReportBuilder::MAX_REPORT_BYTES - strlen($json);
+            $padding = str_repeat(' ', 64 * 1024);
+            while ($remainingBytes > 0) {
+                $paddingChunk = substr($padding, 0, min($remainingBytes, strlen($padding)));
+                $written = fwrite($input, $paddingChunk);
+                if ($written === false || $written === 0) {
+                    self::fail('Unable to write maximum-size JSON input.');
+                }
+                $remainingBytes -= $written;
+            }
+            self::assertSame(1, fwrite($input, "\n"));
+        } finally {
+            if (is_resource($input)) {
+                fclose($input);
+            }
+        }
+
+        try {
+            self::assertSame(RuntimeAuditReportBuilder::MAX_REPORT_BYTES + 1, filesize($inputPath));
+            $result = $this->runCliWithInputFile([PHP_BINARY, $root . '/bin/php-runtime-audit-report'], $inputPath);
+
+            self::assertSame(0, $result['exit'], $result['stderr']);
+            $plan = $this->decodeJsonObject($result['stdout']);
+            self::assertSame('remediation_plan', $plan['record_type']);
+            self::assertSame([], $plan['actions']);
+        } finally {
+            @unlink($inputPath);
+        }
     }
 
     public function test_duplicate_json_keys_are_rejected(): void
@@ -133,6 +197,31 @@ final class RemediationReportCliTest extends TestCase
         self::assertIsResource($process);
         fwrite($pipes[0], $stdin);
         fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exit = proc_close($process);
+
+        self::assertIsString($stdout);
+        self::assertIsString($stderr);
+
+        return ['stdout' => $stdout, 'stderr' => $stderr, 'exit' => $exit];
+    }
+
+    /**
+     * @param list<string> $command
+     * @return array{stdout: string, stderr: string, exit: int}
+     */
+    private function runCliWithInputFile(array $command, string $inputPath): array
+    {
+        $process = proc_open(
+            $command,
+            [0 => ['file', $inputPath, 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            dirname(__DIR__, 2),
+        );
+        self::assertIsResource($process);
         $stdout = stream_get_contents($pipes[1]);
         $stderr = stream_get_contents($pipes[2]);
         fclose($pipes[1]);

@@ -77,6 +77,207 @@ final class RuntimeWorkerEvidenceTest extends TestCase
         self::assertSame('sha256:' . hash('sha256', $commandLine), $sources[0]['captured_digest']);
     }
 
+    public function test_explicit_fpm_config_option_is_recorded_without_persisting_raw_arguments(): void
+    {
+        $commandLine = "/usr/sbin/php-fpm8.2\0--secret=DO_NOT_PERSIST\0--fpm-config=/srv/php82/custom.conf\0";
+        file_put_contents($this->root . '/proc/123/cmdline', $commandLine);
+
+        $worker = $this->collect()['workers'][0];
+
+        self::assertSame('/srv/php82/custom.conf', $worker['fpm_configuration_path']);
+        self::assertSame('observed', $worker['fpm_configuration_state']);
+        self::assertSame(1, $worker['parent_pid']);
+        self::assertStringNotContainsString('DO_NOT_PERSIST', json_encode($worker, JSON_THROW_ON_ERROR));
+    }
+
+    public function test_rewritten_fpm_master_title_supplies_its_config_path(): void
+    {
+        file_put_contents($this->root . '/proc/123/cmdline', "php-fpm: master process (/etc/php/8.2/fpm/php-fpm.conf)\0\0\0");
+
+        $worker = $this->collect()['workers'][0];
+
+        self::assertSame('/etc/php/8.2/fpm/php-fpm.conf', $worker['fpm_configuration_path']);
+        self::assertSame('observed', $worker['fpm_configuration_state']);
+    }
+
+    public function test_custom_fpm_config_does_not_consume_the_binary_default_config_tree(): void
+    {
+        file_put_contents($this->root . '/proc/123/cmdline', "/usr/sbin/php-fpm8.2\0-y\0/srv/php82/custom.conf\0");
+        $inventory = $this->collect();
+        $worker = $inventory['workers'][0];
+        $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
+
+        self::assertSame('/srv/php82/custom.conf', $worker['fpm_configuration_path']);
+        foreach ($evaluation['assessments'] as $assessment) {
+            if ($assessment['subject_id'] === $worker['id'] && str_contains($assessment['record_id'], 'CVE-2026-115560')) {
+                self::assertSame('unknown', $assessment['verdict']);
+                self::assertSame('unknown', $assessment['patch_status']);
+                self::assertSame([], $assessment['patch_evidence_ids']);
+
+                return;
+            }
+        }
+
+        self::fail('Missing configuration advisory assessment for the custom-config worker.');
+    }
+
+    public function test_symlinked_fpm_entrypoint_keeps_default_tree_configuration_unknown(): void
+    {
+        $fpmDirectory = $this->root . '/etc/php/8.2/fpm';
+        $entrypoint = $fpmDirectory . '/php-fpm.conf';
+        $customDirectory = $this->root . '/usr/local/etc';
+        mkdir($fpmDirectory . '/pool.d', 0777, true);
+        mkdir($customDirectory, 0777, true);
+        file_put_contents($customDirectory . '/php-fpm.conf', "; custom FPM configuration\n");
+        self::assertTrue(symlink($customDirectory . '/php-fpm.conf', $entrypoint));
+        file_put_contents(
+            $fpmDirectory . '/pool.d/00-unrelated-default.conf',
+            "[www]\nphp_admin_value[session.upload_progress.enabled]=1\nphp_admin_value[session.serialize_handler]=php_serialize\n",
+        );
+
+        $inventory = $this->collect();
+        $worker = $inventory['workers'][0];
+        $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
+        $entrypointRootsFacts = array_values(array_filter(
+            $inventory['facts'],
+            static fn(array $fact): bool => $fact['key'] === 'configuration.fpm_entrypoint_symlink_roots',
+        ));
+
+        self::assertCount(1, $entrypointRootsFacts);
+        self::assertSame(['/etc/php/8.2/fpm'], $entrypointRootsFacts[0]['value']);
+        self::assertSame('blocked', $inventory['coverage'][3]['status']);
+        foreach ($evaluation['assessments'] as $assessment) {
+            if ($assessment['subject_id'] === $worker['id'] && str_contains($assessment['record_id'], 'CVE-2026-115560')) {
+                self::assertSame('unknown', $assessment['verdict']);
+                self::assertSame('unknown', $assessment['patch_status']);
+                self::assertSame([], $assessment['patch_evidence_ids']);
+
+                return;
+            }
+        }
+
+        self::fail('Missing configuration advisory assessment for the symlinked-config worker.');
+    }
+
+    public function test_pool_worker_inherits_its_captured_masters_custom_config(): void
+    {
+        file_put_contents($this->root . '/proc/123/cmdline', "/usr/sbin/php-fpm8.2\0-y\0/srv/php82/custom.conf\0");
+        mkdir($this->root . '/proc/124');
+        $masterStat = file_get_contents($this->root . '/proc/123/stat');
+        self::assertIsString($masterStat);
+        $poolStat = str_replace(
+            ['123 (php-fpm8.2) S 1 ', '12345'],
+            ['124 (php-fpm8.2) S 123 ', '12450'],
+            $masterStat,
+        );
+        file_put_contents($this->root . '/proc/124/comm', 'php-fpm8.2');
+        file_put_contents($this->root . '/proc/124/stat', $poolStat);
+        file_put_contents($this->root . '/proc/124/cmdline', "php-fpm: pool www\0\0");
+
+        $inventory = $this->collect();
+        $poolWorker = null;
+        foreach ($inventory['workers'] as $worker) {
+            if ($worker['pid'] === 124) {
+                $poolWorker = $worker;
+                break;
+            }
+        }
+        self::assertIsArray($poolWorker);
+        self::assertSame(123, $poolWorker['parent_pid']);
+        self::assertSame('pool', $poolWorker['fpm_configuration_state']);
+        self::assertSame('www', $poolWorker['fpm_pool_name']);
+
+        $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
+        foreach ($evaluation['assessments'] as $assessment) {
+            if ($assessment['subject_id'] === $poolWorker['id'] && str_contains($assessment['record_id'], 'CVE-2026-115560')) {
+                self::assertSame('unknown', $assessment['verdict']);
+                self::assertSame('unknown', $assessment['patch_status']);
+                self::assertSame([], $assessment['patch_evidence_ids']);
+
+                return;
+            }
+        }
+
+        self::fail('Missing configuration advisory assessment for the pool worker.');
+    }
+
+    public function test_fpm_configuration_risk_is_scoped_to_the_named_pool_worker(): void
+    {
+        $poolDirectory = $this->root . '/etc/php/8.2/fpm/pool.d';
+        mkdir($poolDirectory, 0777, true);
+        file_put_contents(
+            $poolDirectory . '/workers.conf',
+            "[www]\nphp_admin_flag[session.upload_progress.enabled]=on\n"
+            . "php_admin_value[session.serialize_handler]=php_binary\n"
+            . "[safe]\nphp_admin_flag[session.upload_progress.enabled]=off\n"
+            . "php_admin_value[session.serialize_handler]=php\n",
+        );
+
+        $masterStat = file_get_contents($this->root . '/proc/123/stat');
+        self::assertIsString($masterStat);
+        foreach ([124 => ['www', 12450], 125 => ['safe', 12550]] as $pid => [$poolName, $startTicks]) {
+            $directory = $this->root . '/proc/' . $pid;
+            mkdir($directory);
+            $stat = str_replace(
+                ['123 (php-fpm8.2) S 1 ', '12345'],
+                [$pid . ' (php-fpm8.2) S 123 ', (string) $startTicks],
+                $masterStat,
+            );
+            file_put_contents($directory . '/comm', 'php-fpm8.2');
+            file_put_contents($directory . '/stat', $stat);
+            file_put_contents($directory . '/cmdline', "php-fpm: pool " . $poolName . "\0\0");
+        }
+
+        $inventory = $this->collect();
+        $workersByPool = [];
+        foreach ($inventory['workers'] as $worker) {
+            if ($worker['pid'] === 124 || $worker['pid'] === 125) {
+                $workersByPool[$worker['fpm_pool_name'] ?? 'missing'] = $worker;
+            }
+        }
+        self::assertSame('worker-124-12450', $workersByPool['www']['id']);
+        self::assertSame('worker-125-12550', $workersByPool['safe']['id']);
+        self::assertNull($workersByPool['www']['executable_path']);
+        self::assertNull($workersByPool['safe']['executable_path']);
+
+        $assessmentsBySubject = [];
+        foreach ((new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load())['assessments'] as $assessment) {
+            if (str_contains($assessment['record_id'], 'CVE-2026-115560')) {
+                $assessmentsBySubject[$assessment['subject_id']] = $assessment;
+            }
+        }
+        $riskyAssessment = $assessmentsBySubject[$workersByPool['www']['id']] ?? null;
+        $safeAssessment = $assessmentsBySubject[$workersByPool['safe']['id']] ?? null;
+
+        self::assertIsArray($riskyAssessment);
+        self::assertSame('needs_investigation', $riskyAssessment['verdict']);
+        self::assertSame('unknown', $riskyAssessment['patch_status']);
+        self::assertIsArray($safeAssessment);
+        self::assertSame('unknown', $safeAssessment['verdict']);
+        self::assertSame('unknown', $safeAssessment['patch_status']);
+    }
+
+    public function test_pool_title_without_captured_parent_does_not_use_the_default_config_tree(): void
+    {
+        file_put_contents($this->root . '/proc/123/cmdline', "php-fpm: pool www\0\0");
+        $inventory = $this->collect();
+        $worker = $inventory['workers'][0];
+        $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
+
+        self::assertSame('pool', $worker['fpm_configuration_state']);
+        foreach ($evaluation['assessments'] as $assessment) {
+            if ($assessment['subject_id'] === $worker['id'] && str_contains($assessment['record_id'], 'CVE-2026-115560')) {
+                self::assertSame('unknown', $assessment['verdict']);
+                self::assertSame('unknown', $assessment['patch_status']);
+                self::assertSame([], $assessment['patch_evidence_ids']);
+
+                return;
+            }
+        }
+
+        self::fail('Missing configuration advisory assessment for the pool-title worker.');
+    }
+
     public function test_php85_fpm_worker_is_discovered_without_inventing_vendor_patch_status(): void
     {
         $fixtureRoot = dirname(__DIR__) . '/fixtures/runtime/debian-php85-fpm';
@@ -118,7 +319,7 @@ final class RuntimeWorkerEvidenceTest extends TestCase
         }
         $id = DiscoveredPhpCommand::fromPath('/usr/sbin/php-fpm7.4', 'fpm')->id();
         $commands['commands'][$id] = ['exit_code' => 0, 'stdout' => 'PHP 7.4.33 (fpm-fcgi) (built: fixture)'];
-        $commands['commands']['dpkg-packages']['stdout'] .= "php7.4-fpm\t7.4.33-1+deb.sury.org+1\n";
+        $commands['commands']['dpkg-packages']['stdout'] .= "php7.4-fpm\t7.4.33-1+deb.sury.org+1\tinstall ok installed\n";
         file_put_contents($this->root . '/commands.json', json_encode($commands, JSON_THROW_ON_ERROR));
 
         $inventory = $this->collect();
@@ -215,6 +416,254 @@ final class RuntimeWorkerEvidenceTest extends TestCase
 
         self::assertContains('/usr/local/etc/php-fpm.conf', $inventory['configuration_by_sapi']['fpm']['session.serialize_handler']['files']);
         self::assertSame('unknown', $inventory['configuration_by_sapi']['cli']['session.serialize_handler']['state']);
+    }
+
+    /** @return iterable<string, array{string, string, string, string}> */
+    public static function fpmBooleanDirectiveVariants(): iterable
+    {
+        yield 'php_flag on' => ['php_flag', 'on', 'on', 'needs_investigation'];
+        yield 'php_admin_flag yes' => ['php_admin_flag', 'yes', 'yes', 'needs_investigation'];
+        yield 'php_admin_flag off' => ['php_admin_flag', 'off', 'off', 'unknown'];
+        yield 'quoted php_flag with inline comment' => ['php_flag', '"on" ; note', 'on', 'needs_investigation'];
+        yield 'quoted php_admin_flag with hash comment' => ['php_admin_flag', "'yes' # note", 'yes', 'needs_investigation'];
+        yield 'quoted php_admin_flag off with inline comment' => ['php_admin_flag', '"off" ; note', 'off', 'unknown'];
+    }
+
+    #[DataProvider('fpmBooleanDirectiveVariants')]
+    public function test_fpm_boolean_pool_flags_are_preserved_and_assessed(
+        string $directive,
+        string $rawValue,
+        string $expectedValue,
+        string $expectedVerdict,
+    ): void {
+        mkdir($this->root . '/etc/php/8.2/fpm/pool.d', 0777, true);
+        $file = '/etc/php/8.2/fpm/pool.d/flags.conf';
+        file_put_contents(
+            $this->root . $file,
+            "[www]\n" . $directive . '[session.upload_progress.enabled]=' . $rawValue . "\n"
+            . "php_admin_value[session.serialize_handler]=\"php_binary\" ; note\n",
+        );
+        $poolSubjectId = $this->addFpmPoolWorker(123, 124, 12450, 'www');
+        $inventory = $this->collect();
+        $uploadSetting = $inventory['configuration_by_sapi']['fpm']['session.upload_progress.enabled'];
+
+        self::assertContains(
+            [
+                'value' => $expectedValue,
+                'file' => $file,
+                'context' => 'pool:www',
+                'configuration_root' => '/etc/php/8.2/fpm',
+            ],
+            $uploadSetting['observations'],
+        );
+
+        foreach ((new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load())['assessments'] as $assessment) {
+            if (!str_contains($assessment['record_id'], 'CVE-2026-115560')
+                || $assessment['subject_id'] !== $poolSubjectId) {
+                continue;
+            }
+
+            self::assertSame($expectedVerdict, $assessment['verdict']);
+            self::assertSame('unknown', $assessment['patch_status']);
+
+            return;
+        }
+
+        self::fail('Missing configuration advisory assessment for the FPM worker.');
+    }
+
+    public function test_alpine_versioned_fpm_configuration_is_discovered_and_assessed(): void
+    {
+        $this->removeDirectory($this->root);
+        $this->copyDirectory(dirname(__DIR__) . '/fixtures/runtime/alpine-fpm', $this->root);
+        mkdir($this->root . '/etc/php82/php-fpm.d', 0777, true);
+        $file = '/etc/php82/php-fpm.d/www.conf';
+        file_put_contents(
+            $this->root . $file,
+            "[www]\nphp_admin_flag[session.upload_progress.enabled]=on\n"
+            . "php_admin_value[session.serialize_handler]=php_binary\n",
+        );
+        $poolSubjectId = $this->addFpmPoolWorker(800, 801, 80100, 'www');
+
+        $inventory = $this->collect();
+        $uploadSetting = $inventory['configuration_by_sapi']['fpm']['session.upload_progress.enabled'];
+
+        self::assertContains(
+            [
+                'value' => 'on',
+                'file' => $file,
+                'context' => 'pool:www',
+                'configuration_root' => '/etc/php82',
+            ],
+            $uploadSetting['observations'],
+        );
+
+        foreach ((new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load())['assessments'] as $assessment) {
+            if (!str_contains($assessment['record_id'], 'CVE-2026-115560')
+                || $assessment['subject_id'] !== $poolSubjectId) {
+                continue;
+            }
+
+            self::assertSame('needs_investigation', $assessment['verdict']);
+            self::assertSame('unknown', $assessment['patch_status']);
+
+            return;
+        }
+
+        self::fail('Missing Alpine FPM configuration advisory assessment.');
+    }
+
+    public function test_alpine_php81_fpm_configuration_is_discovered_and_assessed(): void
+    {
+        $this->removeDirectory($this->root);
+        $this->copyDirectory(dirname(__DIR__) . '/fixtures/runtime/alpine-fpm', $this->root);
+        self::assertTrue(rename($this->root . '/usr/sbin/php-fpm82', $this->root . '/usr/sbin/php-fpm81'));
+        chmod($this->root . '/usr/sbin/php-fpm81', 0755);
+
+        foreach ([
+            'proc/800/cmdline',
+            'proc/800/comm',
+            'proc/800/exe',
+            'proc/800/stat',
+        ] as $relativePath) {
+            $path = $this->root . '/' . $relativePath;
+            $contents = file_get_contents($path);
+            self::assertIsString($contents);
+            file_put_contents($path, str_replace(
+                ['fpm-82', 'php-fpm82', '/usr/sbin/php-fpm82', '8.2.35', 'php82'],
+                ['fpm-81', 'php-fpm81', '/usr/sbin/php-fpm81', '8.1.35', 'php81'],
+                $contents,
+            ));
+        }
+
+        $commandsPath = $this->root . '/commands.json';
+        $commandsJson = file_get_contents($commandsPath);
+        self::assertIsString($commandsJson);
+        $commands = json_decode($commandsJson, true, 16, JSON_THROW_ON_ERROR);
+        if (!is_array($commands)
+            || !is_array($commands['commands'] ?? null)
+            || !is_array($commands['commands']['apk-packages'] ?? null)) {
+            self::fail('Invalid Alpine fixture command data.');
+        }
+        unset($commands['commands']['fpm-82']);
+        $commands['commands'][DiscoveredPhpCommand::fromPath('/usr/sbin/php-fpm81', 'fpm')->id()] = [
+            'exit_code' => 0,
+            'stdout' => 'PHP 8.1.35 (fpm-fcgi) (built: fixture)',
+        ];
+        $commands['commands']['apk-packages']['stdout'] = "php81-8.1.35-r0\nphp81-fpm-8.1.35-r0\n";
+        file_put_contents($commandsPath, json_encode($commands, JSON_THROW_ON_ERROR));
+
+        mkdir($this->root . '/etc/php81/php-fpm.d', 0777, true);
+        $file = '/etc/php81/php-fpm.d/www.conf';
+        file_put_contents(
+            $this->root . $file,
+            "[www]\nphp_admin_flag[session.upload_progress.enabled]=on\n"
+            . "php_admin_value[session.serialize_handler]=php_binary\n",
+        );
+        $poolSubjectId = $this->addFpmPoolWorker(800, 801, 80100, 'www');
+
+        $inventory = $this->collect();
+        $uploadSetting = $inventory['configuration_by_sapi']['fpm']['session.upload_progress.enabled'];
+
+        self::assertContains(
+            [
+                'value' => 'on',
+                'file' => $file,
+                'context' => 'pool:www',
+                'configuration_root' => '/etc/php81',
+            ],
+            $uploadSetting['observations'],
+        );
+
+        foreach ((new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load())['assessments'] as $assessment) {
+            if (!str_contains($assessment['record_id'], 'CVE-2026-115560')
+                || $assessment['subject_id'] !== $poolSubjectId) {
+                continue;
+            }
+
+            self::assertSame('needs_investigation', $assessment['verdict']);
+            self::assertSame('unknown', $assessment['patch_status']);
+
+            return;
+        }
+
+        self::fail('Missing Alpine PHP 8.1 FPM configuration advisory assessment.');
+    }
+
+    public function test_alpine_php810_fpm_configuration_is_discovered_and_assessed(): void
+    {
+        $this->removeDirectory($this->root);
+        $this->copyDirectory(dirname(__DIR__) . '/fixtures/runtime/alpine-fpm', $this->root);
+        self::assertTrue(rename($this->root . '/usr/sbin/php-fpm82', $this->root . '/usr/sbin/php-fpm810'));
+        chmod($this->root . '/usr/sbin/php-fpm810', 0755);
+
+        foreach ([
+            'proc/800/cmdline',
+            'proc/800/comm',
+            'proc/800/exe',
+            'proc/800/stat',
+        ] as $relativePath) {
+            $path = $this->root . '/' . $relativePath;
+            $contents = file_get_contents($path);
+            self::assertIsString($contents);
+            file_put_contents($path, str_replace(
+                ['fpm-82', 'php-fpm82', '/usr/sbin/php-fpm82', '8.2.35', 'php82'],
+                ['fpm-810', 'php-fpm810', '/usr/sbin/php-fpm810', '8.10.1', 'php810'],
+                $contents,
+            ));
+        }
+
+        $commandsPath = $this->root . '/commands.json';
+        $commandsJson = file_get_contents($commandsPath);
+        self::assertIsString($commandsJson);
+        $commands = json_decode($commandsJson, true, 16, JSON_THROW_ON_ERROR);
+        if (!is_array($commands)
+            || !is_array($commands['commands'] ?? null)
+            || !is_array($commands['commands']['apk-packages'] ?? null)) {
+            self::fail('Invalid Alpine fixture command data.');
+        }
+        unset($commands['commands']['fpm-82']);
+        $commands['commands'][DiscoveredPhpCommand::fromPath('/usr/sbin/php-fpm810', 'fpm')->id()] = [
+            'exit_code' => 0,
+            'stdout' => 'PHP 8.10.1 (fpm-fcgi) (built: fixture)',
+        ];
+        $commands['commands']['apk-packages']['stdout'] = "php810-8.10.1-r0\nphp810-fpm-8.10.1-r0\n";
+        file_put_contents($commandsPath, json_encode($commands, JSON_THROW_ON_ERROR));
+
+        mkdir($this->root . '/etc/php810/php-fpm.d', 0777, true);
+        $file = '/etc/php810/php-fpm.d/www.conf';
+        file_put_contents(
+            $this->root . $file,
+            "[www]\nphp_admin_flag[session.upload_progress.enabled]=on\n"
+            . "php_admin_value[session.serialize_handler]=php_binary\n",
+        );
+        $poolSubjectId = $this->addFpmPoolWorker(800, 801, 80100, 'www');
+
+        $inventory = $this->collect();
+        $uploadSetting = $inventory['configuration_by_sapi']['fpm']['session.upload_progress.enabled'];
+        self::assertContains(
+            [
+                'value' => 'on',
+                'file' => $file,
+                'context' => 'pool:www',
+                'configuration_root' => '/etc/php810',
+            ],
+            $uploadSetting['observations'],
+        );
+
+        foreach ((new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load())['assessments'] as $assessment) {
+            if (!str_contains($assessment['record_id'], 'CVE-2026-115560')
+                || $assessment['subject_id'] !== $poolSubjectId) {
+                continue;
+            }
+
+            self::assertSame('needs_investigation', $assessment['verdict']);
+            self::assertSame('unknown', $assessment['patch_status']);
+
+            return;
+        }
+
+        self::fail('Missing Alpine PHP 8.10 FPM configuration advisory assessment.');
     }
 
     /** @return iterable<string, array{bool, bool}> */
@@ -470,6 +919,44 @@ final class RuntimeWorkerEvidenceTest extends TestCase
     private function collect(): array
     {
         return (new RuntimeInventoryCollector(new FixtureProcessRunner($this->root), $this->root, '2026-10-25T00:00:00Z'))->collect();
+    }
+
+    private function addFpmPoolWorker(int $masterPid, int $workerPid, int $startTicks, string $poolName): string
+    {
+        $masterDirectory = $this->root . '/proc/' . $masterPid;
+        $masterStat = file_get_contents($masterDirectory . '/stat');
+        $masterComm = file_get_contents($masterDirectory . '/comm');
+        $masterExe = file_get_contents($masterDirectory . '/exe');
+        if (!is_string($masterStat) || !is_string($masterComm) || !is_string($masterExe)) {
+            throw new \LogicException('The FPM master fixture must have complete process identity.');
+        }
+
+        $workerStat = preg_replace(
+            '/\A' . preg_quote((string) $masterPid, '/') . ' /',
+            $workerPid . ' ',
+            rtrim($masterStat, "\n"),
+            1,
+        );
+        if (!is_string($workerStat)) {
+            throw new \LogicException('Unable to construct the FPM pool worker process identity.');
+        }
+        $workerStat = preg_replace('/\) ([A-Z]) [0-9]+ /', ') $1 ' . $masterPid . ' ', $workerStat, 1);
+        if (!is_string($workerStat)) {
+            throw new \LogicException('Unable to bind the FPM pool worker to its master process.');
+        }
+        $workerStat = preg_replace('/[0-9]+\z/', (string) $startTicks, $workerStat, 1);
+        if (!is_string($workerStat)) {
+            throw new \LogicException('Unable to set the FPM pool worker start time.');
+        }
+
+        $workerDirectory = $this->root . '/proc/' . $workerPid;
+        mkdir($workerDirectory, 0777, true);
+        file_put_contents($workerDirectory . '/comm', $masterComm);
+        file_put_contents($workerDirectory . '/exe', $masterExe);
+        file_put_contents($workerDirectory . '/stat', $workerStat);
+        file_put_contents($workerDirectory . '/cmdline', 'php-fpm: pool ' . $poolName . "\0\0");
+
+        return 'worker-' . $workerPid . '-' . $startTicks;
     }
 
     private function copyDirectory(string $source, string $destination): void

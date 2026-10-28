@@ -22,16 +22,9 @@ final readonly class SubjectIdentity
         public array $evidenceIds,
     ) {}
 
-    /**
-     * @phpstan-param list<ReportFact> $facts
-     */
-    public static function resolve(array $facts, string $subjectId): self
+    /** @phpstan-param array<string, ReportFact> $byKey */
+    public static function resolveIndexed(array $byKey, string $subjectId): self
     {
-        $byKey = [];
-        foreach ($facts as $fact) {
-            $byKey[$fact['key']] = $fact;
-        }
-
         if ($subjectId === 'local-host') {
             return new self('unknown', 'No runtime subject was identified on this host.', []);
         }
@@ -42,6 +35,14 @@ final readonly class SubjectIdentity
                 self::value($f, $p . '.binary_path'),
                 self::value($f, $p . '.version'),
             ), ['.version', '.binary_path']);
+        }
+
+        if (str_starts_with($subjectId, 'fpm-executable-')) {
+            return self::resolveById($byKey, $subjectId, 'runtime.fpm_executable.', 'fpm-executable', static fn(string $p, array $f): string => sprintf(
+                'PHP-FPM executable %s (PHP %s)',
+                self::value($f, $p . '.binary_path'),
+                self::value($f, $p . '.version'),
+            ), ['.binary_path', '.version']);
         }
 
         if (str_starts_with($subjectId, 'package-')) {
