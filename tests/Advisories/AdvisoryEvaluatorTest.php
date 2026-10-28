@@ -1056,7 +1056,7 @@ final class AdvisoryEvaluatorTest extends TestCase
         $inventory = $this->collectInventory('cve115560-config');
         $localWorker = $this->fpmPoolWorker($inventory, 'www');
         $localSubjectId = $localWorker['id'];
-        $systemWorker = $inventory['workers'][0];
+        $systemWorker = $this->fpmParentWorker($inventory, $localWorker);
         $systemWorker['id'] = 'worker-124-12345';
         $systemWorker['pid'] = 124;
         $systemWorker['process_name'] = 'php-fpm8.2';
@@ -1094,7 +1094,19 @@ final class AdvisoryEvaluatorTest extends TestCase
         $configurationFactIds = $localBasis['configuration_fact_ids'];
         self::assertIsArray($configurationFactIds);
         self::assertCount(2, $configurationFactIds);
-        self::assertSame('fact.worker.2.executable_path', $localBasis['runtime_path_fact_id']);
+        $localWorkerFactPrefix = null;
+        foreach ($inventory['facts'] as $fact) {
+            if (!str_starts_with($fact['key'], 'worker.')
+                || !str_ends_with($fact['key'], '.id')
+                || $fact['value'] !== $localSubjectId) {
+                continue;
+            }
+
+            $localWorkerFactPrefix = substr($fact['key'], 0, -strlen('.id'));
+            break;
+        }
+        self::assertIsString($localWorkerFactPrefix);
+        self::assertSame('fact.' . $localWorkerFactPrefix . '.executable_path', $localBasis['runtime_path_fact_id']);
         self::assertSame([], $systemBasis['configuration_fact_ids']);
         foreach ($configurationFactIds as $configurationFactId) {
             self::assertIsString($configurationFactId);
@@ -1216,9 +1228,9 @@ final class AdvisoryEvaluatorTest extends TestCase
     public function test_unnamed_fpm_master_does_not_inherit_named_pool_configuration(): void
     {
         $inventory = $this->collectInventory('cve115560-config');
-        $master = $inventory['workers'][0];
-        self::assertNull($master['fpm_pool_name']);
         $poolWorker = $this->fpmPoolWorker($inventory, 'www');
+        $master = $this->fpmParentWorker($inventory, $poolWorker);
+        self::assertNull($master['fpm_pool_name']);
         self::assertSame($master['pid'], $poolWorker['parent_pid']);
 
         [, $evaluation] = $this->evaluateInventory($inventory);
@@ -1484,6 +1496,27 @@ final class AdvisoryEvaluatorTest extends TestCase
         }
 
         throw new \LogicException('Missing FPM worker for pool ' . $poolName . '.');
+    }
+
+    /**
+     * @phpstan-param RuntimeInventory $inventory
+     * @phpstan-param RuntimeInventory['workers'][int] $poolWorker
+     * @phpstan-return RuntimeInventory['workers'][int]
+     */
+    private function fpmParentWorker(array $inventory, array $poolWorker): array
+    {
+        $parentPid = $poolWorker['parent_pid'];
+        if (!is_int($parentPid)) {
+            throw new \LogicException('FPM pool worker has no captured parent PID.');
+        }
+
+        foreach ($inventory['workers'] as $worker) {
+            if ($worker['kind'] === 'fpm' && $worker['pid'] === $parentPid) {
+                return $worker;
+            }
+        }
+
+        throw new \LogicException('Missing captured FPM parent worker for PID ' . $parentPid . '.');
     }
 
     /** @phpstan-return RuntimeInventory */
