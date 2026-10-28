@@ -1,0 +1,84 @@
+name: Build PHAR
+
+on:
+  pull_request:
+    paths:
+      - 'composer.json'
+      - 'composer.lock'
+      - 'bin/**'
+      - 'src/**'
+      - 'resources/**'
+      - 'tests/**'
+      - 'tools/build-phar.php'
+      - 'README.md'
+      - '.github/workflows/build-phar.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'composer.json'
+      - 'composer.lock'
+      - 'bin/**'
+      - 'src/**'
+      - 'resources/**'
+      - 'tests/**'
+      - 'tools/build-phar.php'
+      - 'README.md'
+      - '.github/workflows/build-phar.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up PHP and Composer
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer:v2
+          coverage: none
+      - name: Validate Composer manifest
+        run: composer validate --no-check-publish
+      - name: Install production dependencies
+        run: composer install --no-dev --no-interaction --prefer-dist --no-progress
+      - name: Build PHAR
+        env:
+          PHP_RUNTIME_AUDIT_BUILD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: php -d phar.readonly=0 tools/build-phar.php "$RUNNER_TEMP/php-runtime-audit.phar"
+      - name: Smoke-test PHAR commands and bundled resources
+        shell: bash
+        run: |
+          phar="$RUNNER_TEMP/php-runtime-audit.phar"
+          php "$phar" --help
+          php "$phar" > "$RUNNER_TEMP/default-inventory.json"
+          php -r '$report = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR); if (!is_array($report["records"] ?? null) || !array_is_list($report["records"])) { fwrite(STDERR, "Default PHAR inventory returned an invalid report.\n"); exit(1); }' "$RUNNER_TEMP/default-inventory.json"
+          php "$phar" inventory --help
+          php "$phar" report --help
+          php "$phar" evidence validate tests/fixtures/evidence/v1/observation.valid.json
+          printf '%s\n' '{"intent":"runtime-patch","facts":{}}' \
+            | php "$phar" profile \
+            | php -r '$result = json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR); if (($result["intent"] ?? null) !== "runtime-patch" || !is_array($result["profile_context"] ?? null)) { fwrite(STDERR, "PHAR profile command returned an invalid selection.\n"); exit(1); }'
+          php "$phar" inventory --fixture tests/fixtures/runtime/debian-fpm \
+            | php "$phar" report --report "$RUNNER_TEMP/remediation-plan.md" \
+            > "$RUNNER_TEMP/remediation-plan.json"
+          test -s "$RUNNER_TEMP/remediation-plan.json"
+          test -s "$RUNNER_TEMP/remediation-plan.md"
+      - name: Create SHA-256 checksum
+        working-directory: ${{ runner.temp }}
+        run: sha256sum php-runtime-audit.phar > php-runtime-audit.phar.sha256
+      - name: Upload PHAR workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: php-runtime-audit-phar-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/php-runtime-audit.phar
+            ${{ runner.temp }}/php-runtime-audit.phar.sha256
+          if-no-files-found: error
+          retention-days: 30

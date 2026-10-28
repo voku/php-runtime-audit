@@ -28,9 +28,21 @@ final readonly class ProfileContextBuilder
     /** @return array<string, string> Profile ID to bounded Markdown guidance. */
     public function load(AuditProfileSelection $selection): array
     {
-        $profileRoot = realpath($this->profileRoot);
-        if (is_link($this->profileRoot) || !is_string($profileRoot) || !is_dir($profileRoot)) {
-            throw new RuntimeException('Profile resource root is missing or unreadable.');
+        $isPharResource = str_starts_with($this->profileRoot, 'phar://');
+        if ($isPharResource) {
+            $runningArchive = \Phar::running(false);
+            $expectedProfileRoot = $runningArchive === ''
+                ? null
+                : 'phar://' . $runningArchive . '/resources/skills/php-runtime-audit/profiles';
+            if ($this->profileRoot !== $expectedProfileRoot || !is_dir($this->profileRoot)) {
+                throw new RuntimeException('Profile resource root is missing or unreadable.');
+            }
+            $profileRoot = $this->profileRoot;
+        } else {
+            $profileRoot = realpath($this->profileRoot);
+            if (is_link($this->profileRoot) || !is_string($profileRoot) || !is_dir($profileRoot)) {
+                throw new RuntimeException('Profile resource root is missing or unreadable.');
+            }
         }
 
         $context = [];
@@ -42,10 +54,13 @@ final readonly class ProfileContextBuilder
             }
 
             $path = $profileRoot . '/' . $profileId . '.md';
-            $resolvedPath = realpath($path);
+            $resolvedPath = $isPharResource ? $path : realpath($path);
+            $pathPrefix = $isPharResource
+                ? rtrim($profileRoot, '/') . '/'
+                : rtrim($profileRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
             if (is_link($path)
                 || !is_string($resolvedPath)
-                || !str_starts_with($resolvedPath, rtrim($profileRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)
+                || !str_starts_with($resolvedPath, $pathPrefix)
                 || !is_file($resolvedPath)
                 || !is_readable($resolvedPath)) {
                 throw new RuntimeException('Selected profile resource is missing or unreadable: ' . $profileId);

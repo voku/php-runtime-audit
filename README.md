@@ -36,6 +36,33 @@ php bin/php-runtime-audit-inventory | php bin/php-runtime-audit-report --report 
 
 Run it as the account that can read the system's process and package information (root or a user with equivalent `/proc` and package-database read access). Nothing is written to disk, no packages are changed, and no service is restarted.
 
+### Use a prebuilt PHAR
+
+Each successful [Build PHAR workflow](https://github.com/voku/php-runtime-audit/actions/workflows/build-phar.yml) run uploads a self-contained `php-runtime-audit.phar` and its SHA-256 checksum. Choose a successful run for `main` and download its artifact using the run ID and commit SHA shown by GitHub Actions:
+
+```bash
+gh run download RUN_ID \
+  --repo voku/php-runtime-audit \
+  --name php-runtime-audit-phar-COMMIT_SHA \
+  --dir php-runtime-audit-phar
+cd php-runtime-audit-phar
+sha256sum --check php-runtime-audit.phar.sha256
+```
+
+The artifact is retained for 30 days. To get a newer build, download the artifact from a later successful `main` run. The PHAR supports the same PHP 8.2+ runtime as the source install:
+
+```bash
+# Collect evidence from the running host
+php php-runtime-audit.phar inventory > runtime-report.json
+
+# Generate a reviewable remediation plan
+php php-runtime-audit.phar inventory \
+  | php php-runtime-audit.phar report --report REPORT.md \
+  > remediation-plan.json
+```
+
+The PHAR also provides `evidence` and `profile` commands. Use `php php-runtime-audit.phar --help` to list the available commands. Inventory is the default when no command is given.
+
 ## The toolkit
 
 | Command | What it does |
