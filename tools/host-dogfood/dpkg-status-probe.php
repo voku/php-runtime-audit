@@ -75,12 +75,12 @@ function findExactPackage(string $data, string $package): ?array
             if ($line[0] === ' ' || $line[0] === "\t") {
                 continue; // Legitimate folded description field; never a new key.
             }
-            if (preg_match('/\A([A-Za-z][A-Za-z0-9-]*):[ \t]+([^\r\n]*)\z/D', $line, $m) !== 1) {
+            if (preg_match('/\A([A-Za-z][A-Za-z0-9-]*):(?:[ \t]+([^\r\n]*))?\z/D', $line, $m) !== 1) {
                 $invalid = true;
                 continue;
             }
             if (in_array($m[1], ['Package', 'Version', 'Status'], true)) {
-                $fields[$m[1]][] = $m[2];
+                $fields[$m[1]][] = $m[2] ?? '';
             }
         }
         if (!in_array($package, $fields['Package'] ?? [], true)) {
@@ -104,7 +104,7 @@ function findExactPackage(string $data, string $package): ?array
 
 function selfTest(): void
 {
-    $valid = "Package: php8.3-fpm\nStatus: install ok installed\nArchitecture: amd64\nVersion: 8.3.6-0ubuntu0.24.04.13\nDescription: php-fpm\n extra folded description\n\n";
+    $valid = "Package: php8.3-fpm\nStatus: install ok installed\nArchitecture: amd64\nConffiles:\n /etc/php/fpm.ini 0abc\nVersion: 8.3.6-0ubuntu0.24.04.13\nDescription: php-fpm\n extra folded description\n\n";
     $match = findExactPackage($valid, TARGET_PACKAGE);
     if ($match !== ['version' => '8.3.6-0ubuntu0.24.04.13', 'installed' => true]
         || findExactPackage($valid, 'not-a-package') !== null) {
