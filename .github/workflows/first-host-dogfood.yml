@@ -49,7 +49,7 @@ jobs:
           php -n tools/host-dogfood/dpkg-status-probe.php --self-test
           # The package-manager command is an independent CI control,
           # NOT executed by the product collector or the file-only probe.
-          export PRA_EXPECTED_DPKG_VERSION="$(dpkg-query -W -f='\${Version}' php8.3-fpm)"
+          export PRA_EXPECTED_DPKG_VERSION="$(dpkg-query -W -f='${Version}' php8.3-fpm)"
           test -n "$PRA_EXPECTED_DPKG_VERSION"
           php -n tools/host-dogfood/dpkg-status-probe.php --host > host-dogfood-results/dpkg-file-probe.json
           cat host-dogfood-results/dpkg-file-probe.json
