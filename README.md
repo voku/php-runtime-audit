@@ -36,6 +36,8 @@ php bin/php-runtime-audit-inventory | php bin/php-runtime-audit-report --report 
 
 Run it as the account that can read the system's process and package information (root or a user with equivalent `/proc` and package-database read access). Nothing is written to disk, no packages are changed, and no service is restarted.
 
+Each report includes the OS identity, separate CLI and web-worker versions, package-manager evidence, Apache module mappings, SAPI-scoped PHP settings where their configuration paths are known, configured extension directives, worker start ticks, source digests and advisory citations. CLI-only settings are not used as FPM or Apache evidence. A setting with missing, conflicting, symlinked or truncated source data remains unknown. FPM config attribution uses an observed `-y`/`--fpm-config` path or rewritten master title; pool workers inherit only from a captured parent with the same executable and version. Custom paths and missing parent linkage remain unknown. A suspicious value in any inspected applicable web-SAPI configuration source may request investigation, but does not change patch status or prove that a worker loaded the setting. Worker version evidence is withheld if a versioned process name, executable and before/after `/proc` identity do not agree, or an explicit argv version conflicts. The CLI probe runs PHP with `-n`; it records compiled-in CLI extensions while configuration files record extension directives separately. It does not load the host's configured extensions during collection.
+
 ### Use a prebuilt PHAR
 
 Each successful [Build PHAR workflow](https://github.com/voku/php-runtime-audit/actions/workflows/build-phar.yml) run uploads a self-contained `php-runtime-audit.phar` and its SHA-256 checksum. Choose a successful run for `main` and download its artifact using the run ID and commit SHA shown by GitHub Actions:
@@ -75,6 +77,8 @@ The PHAR also provides `evidence` and `profile` commands. Use `php php-runtime-a
 ## What it checks today
 
 This version covers Linux process/package inventory for **CLI**, **PHP-FPM**, and **Apache `mod_php`** workers, evaluated against the PHP2Shell advisory pack: `CVE-2026-109618`, `CVE-2026-109619`, and `CVE-2026-115560`. It is not a general security certification — review the evidence and source revisions before making operational decisions.
+
+The audit tool itself requires PHP 8.2 or newer. It can inspect target hosts that contain PHP 5.x, 7.x, or 8.x runtimes; discovering a legacy target does not mean the tool can run on that PHP version.
 
 Every assessment resolves to one of four verdicts:
 

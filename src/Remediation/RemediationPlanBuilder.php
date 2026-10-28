@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace voku\PhpRuntimeAudit\Remediation;
 
 use voku\PhpRuntimeAudit\Advisories\AdvisoryCatalog;
+use voku\PhpRuntimeAudit\Advisories\RuntimeAuditReportBuilder;
 
 /**
  * Builds reviewable remediation proposals from an already-generated runtime audit report.
@@ -20,8 +21,8 @@ use voku\PhpRuntimeAudit\Advisories\AdvisoryCatalog;
  */
 final class RemediationPlanBuilder
 {
-    private const MAX_RECORDS = 4096;
-    private const MAX_FACTS = 4096;
+    private const MAX_RECORDS = RuntimeAuditReportBuilder::MAX_REPORT_RECORDS;
+    private const MAX_FACTS = RuntimeAuditReportBuilder::MAX_REPORT_FACTS;
 
     private readonly AdvisoryCatalog $catalog;
 
@@ -40,6 +41,12 @@ final class RemediationPlanBuilder
         }
 
         $facts = $this->extractFacts($records, $warnings);
+        $factsById = [];
+        $factsByKey = [];
+        foreach ($facts as $fact) {
+            $factsById[$fact['fact_id']] = $fact;
+            $factsByKey[$fact['key']] = $fact;
+        }
         $advisoriesByCve = [];
         foreach ($this->catalog->advisories as $advisory) {
             $advisoriesByCve[$advisory['cve']] = $advisory;
@@ -51,7 +58,7 @@ final class RemediationPlanBuilder
                 continue;
             }
             /** @var array<string, mixed> $record */
-            $action = $this->buildAction($record, $facts, $advisoriesByCve, $warnings);
+            $action = $this->buildAction($record, $factsById, $factsByKey, $advisoriesByCve, $warnings);
             if ($action !== null) {
                 $actions[] = $action;
             }
@@ -75,42 +82,58 @@ final class RemediationPlanBuilder
      */
     private function extractFacts(array $records, array &$warnings): array
     {
+        $foundObservation = false;
+        $facts = [];
+        $seenFactIds = [];
         foreach ($records as $record) {
             if (!is_array($record) || ($record['record_type'] ?? null) !== 'observation') {
                 continue;
             }
+            $foundObservation = true;
             $rawFacts = $record['facts'] ?? null;
             if (!is_array($rawFacts) || !array_is_list($rawFacts)) {
                 $warnings[] = 'The observation record has no usable facts list; evidence citations will be incomplete.';
 
-                return [];
+                continue;
             }
-            if (count($rawFacts) > self::MAX_FACTS) {
-                $warnings[] = 'The observation record exceeds the supported fact count; evidence citations may be incomplete.';
-                $rawFacts = array_slice($rawFacts, 0, self::MAX_FACTS);
-            }
-            $facts = [];
             foreach ($rawFacts as $fact) {
-                if (is_array($fact) && is_string($fact['fact_id'] ?? null) && is_string($fact['key'] ?? null) && is_string($fact['source_id'] ?? null)) {
-                    $facts[] = ['fact_id' => $fact['fact_id'], 'key' => $fact['key'], 'value' => $fact['value'] ?? null, 'source_id' => $fact['source_id']];
+                if (!is_array($fact) || !is_string($fact['fact_id'] ?? null)
+                    || !is_string($fact['key'] ?? null) || !is_string($fact['source_id'] ?? null)) {
+                    continue;
                 }
-            }
+                if (isset($seenFactIds[$fact['fact_id']])) {
+                    continue;
+                }
+                if (count($facts) >= self::MAX_FACTS) {
+                    $warnings[] = 'The report exceeds the supported fact count; evidence citations may be incomplete.';
 
-            return $facts;
+                    return $facts;
+                }
+                $facts[] = [
+                    'fact_id' => $fact['fact_id'],
+                    'key' => $fact['key'],
+                    'value' => $fact['value'] ?? null,
+                    'source_id' => $fact['source_id'],
+                ];
+                $seenFactIds[$fact['fact_id']] = true;
+            }
         }
 
-        $warnings[] = 'No observation record was found; evidence citations will be incomplete.';
+        if (!$foundObservation) {
+            $warnings[] = 'No observation record was found; evidence citations will be incomplete.';
+        }
 
-        return [];
+        return $facts;
     }
 
     /**
      * @param array<string, mixed> $record
-     * @phpstan-param list<ReportFact> $facts
+     * @param array<string, ReportFact> $factsById
+     * @param array<string, ReportFact> $factsByKey
      * @phpstan-param array<string, AdvisoryDefinition> $advisoriesByCve
      * @param list<string> $warnings
      */
-    private function buildAction(array $record, array $facts, array $advisoriesByCve, array &$warnings): ?RemediationAction
+    private function buildAction(array $record, array $factsById, array $factsByKey, array $advisoriesByCve, array &$warnings): ?RemediationAction
     {
         $recordId = $record['record_id'] ?? null;
         $subjectId = $record['subject_id'] ?? null;
@@ -131,21 +154,21 @@ final class RemediationPlanBuilder
             return null;
         }
         $cve = $parts[1];
-        $factIdSet = [];
-        foreach ($facts as $fact) {
-            $factIdSet[$fact['fact_id']] = true;
-        }
         $validEvidenceIds = [];
         foreach ($patchEvidenceIds as $evidenceId) {
-            if (is_string($evidenceId) && isset($factIdSet[$evidenceId])) {
+            if (is_string($evidenceId) && isset($factsById[$evidenceId])) {
                 $validEvidenceIds[] = $evidenceId;
             } elseif (is_string($evidenceId)) {
                 $warnings[] = sprintf('%s cites evidence_id "%s" that does not match any fact in this report; it was dropped.', $cve, SafeText::plain($evidenceId, 64));
             }
         }
 
-        $identity = SubjectIdentity::resolve($facts, $subjectId);
+        $identity = SubjectIdentity::resolveIndexed($factsByKey, $subjectId);
         $validEvidenceIds = array_values(array_unique([...$validEvidenceIds, ...$identity->evidenceIds]));
+        if ($verdict === 'needs_investigation') {
+            $configurationEvidenceIds = $this->configurationEvidenceIds($cve, $subjectId, $factsById, $factsByKey);
+            $validEvidenceIds = array_values(array_unique([...$validEvidenceIds, ...$configurationEvidenceIds]));
+        }
 
         $advisory = $advisoriesByCve[$cve] ?? null;
         $advisoryTitle = $advisory !== null ? SafeText::plain($advisory['title']) : 'Advisory not found in the loaded catalog';
@@ -268,6 +291,37 @@ final class RemediationPlanBuilder
                 ),
             default => $this->recordUnsupportedVerdict($warnings, $cve),
         };
+    }
+
+    /**
+     * @param array<string, ReportFact> $factsById
+     * @param array<string, ReportFact> $factsByKey
+     * @return list<string>
+     */
+    private function configurationEvidenceIds(string $cve, string $subjectId, array $factsById, array $factsByKey): array
+    {
+        $basis = $factsByKey['advisory.' . $cve . '.' . $subjectId . '.assessment_basis'] ?? null;
+        $basisValue = $basis['value'] ?? null;
+        if ($basisValue instanceof \stdClass) {
+            $basisValue = get_object_vars($basisValue);
+        }
+        $configurationFactIds = is_array($basisValue) ? ($basisValue['configuration_fact_ids'] ?? null) : null;
+        if (!is_array($configurationFactIds) || !array_is_list($configurationFactIds)) {
+            return [];
+        }
+
+        $evidenceIds = [];
+        foreach ($configurationFactIds as $factId) {
+            if (!is_string($factId)) {
+                continue;
+            }
+            $fact = $factsById[$factId] ?? null;
+            if ($fact !== null && str_starts_with($fact['key'], 'configuration.')) {
+                $evidenceIds[] = $factId;
+            }
+        }
+
+        return array_values(array_unique($evidenceIds));
     }
 
     /** @param list<string> $warnings */

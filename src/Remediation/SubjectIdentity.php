@@ -22,16 +22,9 @@ final readonly class SubjectIdentity
         public array $evidenceIds,
     ) {}
 
-    /**
-     * @phpstan-param list<ReportFact> $facts
-     */
-    public static function resolve(array $facts, string $subjectId): self
+    /** @phpstan-param array<string, ReportFact> $byKey */
+    public static function resolveIndexed(array $byKey, string $subjectId): self
     {
-        $byKey = [];
-        foreach ($facts as $fact) {
-            $byKey[$fact['key']] = $fact;
-        }
-
         if ($subjectId === 'local-host') {
             return new self('unknown', 'No runtime subject was identified on this host.', []);
         }
@@ -42,6 +35,14 @@ final readonly class SubjectIdentity
                 self::value($f, $p . '.binary_path'),
                 self::value($f, $p . '.version'),
             ), ['.version', '.binary_path']);
+        }
+
+        if (str_starts_with($subjectId, 'fpm-executable-')) {
+            return self::resolveById($byKey, $subjectId, 'runtime.fpm_executable.', 'fpm-executable', static fn(string $p, array $f): string => sprintf(
+                'PHP-FPM executable %s (PHP %s)',
+                self::value($f, $p . '.binary_path'),
+                self::value($f, $p . '.version'),
+            ), ['.binary_path', '.version']);
         }
 
         if (str_starts_with($subjectId, 'package-')) {
@@ -99,15 +100,31 @@ final readonly class SubjectIdentity
                 || !is_string($nameFact['value'] ?? null) || !is_string($versionFact['value'] ?? null)) {
                 continue;
             }
-            $candidateId = 'package-' . substr(hash('sha256', $nameFact['value'] . "\0" . $versionFact['value']), 0, 20);
+            $architectureFact = $byKey['package.' . $index . '.architecture'] ?? null;
+            $architecture = is_array($architectureFact) && is_string($architectureFact['value'] ?? null)
+                ? $architectureFact['value']
+                : null;
+            $identity = $nameFact['value'] . "\0" . $versionFact['value']
+                . ($architecture !== null ? "\0" . $architecture : '');
+            $candidateId = 'package-' . substr(hash('sha256', $identity), 0, 20);
             if ($candidateId !== $subjectId) {
                 continue;
             }
 
+            $evidenceIds = [$nameFact['fact_id'], $versionFact['fact_id']];
+            if (is_array($architectureFact)) {
+                $evidenceIds[] = $architectureFact['fact_id'];
+            }
+
             return new self(
                 'package',
-                SafeText::plain(sprintf('Installed package %s %s', $nameFact['value'], $versionFact['value'])),
-                [$nameFact['fact_id'], $versionFact['fact_id']],
+                SafeText::plain(sprintf(
+                    'Installed package %s %s%s',
+                    $nameFact['value'],
+                    $versionFact['value'],
+                    $architecture !== null ? ' (' . $architecture . ')' : '',
+                )),
+                $evidenceIds,
             );
         }
 

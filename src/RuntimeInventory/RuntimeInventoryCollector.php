@@ -13,26 +13,28 @@ use voku\PhpRuntimeAudit\Evidence\DuplicateJsonKeyGuard;
  * Collects bounded local facts without contacting or changing the audited host.
  *
  * @phpstan-type RuntimeCli array{id: string, kind: 'cli', binary_path: string, version: string, sapi: 'cli', extensions: list<string>|null}
- * @phpstan-type RuntimePackage array{name: string, version: string}
+ * @phpstan-type RuntimeFpmExecutable array{id: string, binary_path: string, version: string|null}
+ * @phpstan-type RuntimePackage array{name: string, version: string, architecture?: string|null}
  * @phpstan-import-type PackageProvenance from RuntimePackageProvenance
- * @phpstan-type RuntimeWorker array{id: string, pid: int, kind: 'fpm'|'apache', process_name: string|null, executable_path: string|null, executable_deleted: bool|null, version: string|null, apache_php_modules: list<string>|null, apache_php_module_deleted: bool|null, process_start_ticks_since_boot: int|null, package_provenance: PackageProvenance}
+ * @phpstan-type RuntimeWorker array{id: string, pid: int, parent_pid: int|null, kind: 'fpm'|'apache', process_name: string|null, executable_path: string|null, executable_deleted: bool|null, version: string|null, fpm_configuration_path: string|null, fpm_configuration_state: 'default'|'observed'|'pool'|'unavailable', fpm_pool_name: string|null, apache_php_modules: list<string>|null, apache_php_module_deleted: bool|null, apache_php_module_deleted_paths: list<string>|null, process_start_ticks_since_boot: int|null, package_provenance: PackageProvenance, worker_namespace_verified: bool, apache_namespace_verified?: bool}
  * @phpstan-type RuntimeSource array{source_id: string, kind: string, locator: string, captured_at: string, captured_digest: string|null, current_digest: string|null, freshness: string}
  * @phpstan-type RuntimeFact array{fact_id: string, key: string, value: mixed, source_id: string}
  * @phpstan-type RuntimeConfigObservation array{value: string, file: string, context: string, configuration_root: string|null}
- * @phpstan-type RuntimeConfigSetting array{value: string|null, state: string, files: list<string>, observations: list<RuntimeConfigObservation>}
+ * @phpstan-type RuntimeConfigSetting array{value: string|null, state: string, files: list<string>, observations: list<RuntimeConfigObservation>, evidence_source_ids?: list<string>}
  * @phpstan-type RuntimeConfigSettings array{'session.upload_progress.enabled': RuntimeConfigSetting, 'session.serialize_handler': RuntimeConfigSetting, memory_limit: RuntimeConfigSetting, post_max_size: RuntimeConfigSetting, upload_max_filesize: RuntimeConfigSetting, fatal_error_backtraces: RuntimeConfigSetting}
  * @phpstan-type RuntimeSapiConfiguration array{cli: RuntimeConfigSettings, fpm: RuntimeConfigSettings, apache2: RuntimeConfigSettings}
- * @phpstan-type ProcessIdentity array{pid: int, command: string, start_ticks: int}
+ * @phpstan-type ProcessIdentity array{pid: int, parent_pid: int, command: string, start_ticks: int}
  * @phpstan-type RuntimeConfiguration array{'session.upload_progress.enabled': RuntimeConfigSetting, 'session.serialize_handler': RuntimeConfigSetting, memory_limit: RuntimeConfigSetting, post_max_size: RuntimeConfigSetting, upload_max_filesize: RuntimeConfigSetting, fatal_error_backtraces: RuntimeConfigSetting, configured_extensions: list<array{name: string, file: string}>|null}
  * @phpstan-type RuntimeCoverage array{check_id: string, status: 'attempted'|'blocked', evidence_ids: list<string>, gap: string|null}
  * @phpstan-type RuntimeConfigurationCollection array{configuration: RuntimeConfiguration, by_sapi: RuntimeSapiConfiguration}
- * @phpstan-type RuntimeInventory array{schema_version: '1.0', asset_id: string, observed_at: string, distribution: string|null, distribution_version: string|null, distribution_codename: string|null, container: bool|null, runtimes: list<RuntimeCli>, packages: list<RuntimePackage>, package_manager: string|null, package_inventory_state: string, workers: list<RuntimeWorker>, configuration: RuntimeConfiguration, configuration_by_sapi: RuntimeSapiConfiguration, sources: list<RuntimeSource>, facts: list<RuntimeFact>, coverage: list<RuntimeCoverage>}
+ * @phpstan-type RuntimeInventory array{schema_version: '1.0', asset_id: string, observed_at: string, distribution: string|null, distribution_version: string|null, distribution_codename: string|null, container: bool|null, runtimes: list<RuntimeCli>, fpm_executables: list<array{id: string, binary_path: string, version: string|null}>, packages: list<RuntimePackage>, package_manager: string|null, package_inventory_state: string, workers: list<RuntimeWorker>, configuration: RuntimeConfiguration, configuration_by_sapi: RuntimeSapiConfiguration, sources: list<RuntimeSource>, facts: list<RuntimeFact>, coverage: list<RuntimeCoverage>}
  */
 final class RuntimeInventoryCollector
 {
     private const MAX_FILE_BYTES = 1_048_576;
     private const MAX_CONFIG_FILE_BYTES = 262_144;
     private const MAX_CONFIG_FILES = 64;
+    private const MAX_CONFIGURED_EXTENSIONS = 512;
     private const MAX_CONFIG_TREE_ENTRIES = 2048;
     private const MAX_FPM_POOL_SECTIONS = 32;
     private const MAX_PROCESSES = 4096;
@@ -67,10 +69,17 @@ final class RuntimeInventoryCollector
     private bool $workerDiscoveryIncomplete = false;
     private bool $runtimeDiscoveryTruncated = false;
     private bool $runtimeDiscoveryIncomplete = false;
+    private bool $cliProbeIncomplete = false;
+    private bool $fpmProbeIncomplete = false;
+    private int $pathDirectoriesInspected = 0;
     private int $pathCandidateCount = 0;
     private bool $packageInventoryTruncated = false;
+    private bool $packageInventoryIncomplete = false;
+    private bool $packageIdentityAmbiguous = false;
     private bool $configurationDiscoveryIncomplete = false;
     private int $configurationFilesFound = 0;
+    /** @var list<string> */
+    private array $fpmConfigurationSymlinkRoots = [];
 
     public function __construct(
         private readonly ProcessRunner $processRunner,
@@ -99,10 +108,16 @@ final class RuntimeInventoryCollector
         $this->workerDiscoveryIncomplete = false;
         $this->runtimeDiscoveryTruncated = false;
         $this->runtimeDiscoveryIncomplete = false;
+        $this->cliProbeIncomplete = false;
+        $this->fpmProbeIncomplete = false;
+        $this->pathDirectoriesInspected = 0;
         $this->pathCandidateCount = 0;
         $this->packageInventoryTruncated = false;
+        $this->packageInventoryIncomplete = false;
+        $this->packageIdentityAmbiguous = false;
         $this->configurationDiscoveryIncomplete = false;
         $this->configurationFilesFound = 0;
+        $this->fpmConfigurationSymlinkRoots = [];
 
         $osRelease = $this->readFile('/etc/os-release', 65_536);
         $osSource = $this->addSource('file', '/etc/os-release', $osRelease);
@@ -123,10 +138,12 @@ final class RuntimeInventoryCollector
 
         $this->collectCommands();
         $runtimes = $this->collectCliRuntimes();
+        $fpmExecutables = $this->collectFpmExecutables();
         $packageState = $this->collectPackages();
         $workers = $this->collectWorkers($packageState['manager'], $packageState['packages'], $os['ID'] ?? null);
         $configurationState = $this->collectConfiguration();
         $configuration = $configurationState['configuration'];
+        $this->recordRuntimeDiscoveryFacts();
         $coverage = $this->buildCoverage($runtimes, $packageState, $workers, $configuration);
 
         return [
@@ -138,6 +155,7 @@ final class RuntimeInventoryCollector
             'distribution_codename' => $os['VERSION_CODENAME'] ?? null,
             'container' => $container['detected'],
             'runtimes' => $runtimes,
+            'fpm_executables' => $fpmExecutables,
             'packages' => $packageState['packages'],
             'package_manager' => $packageState['manager'],
             'package_inventory_state' => $packageState['state'],
@@ -209,19 +227,48 @@ final class RuntimeInventoryCollector
             }
         }
         $pathDirectories = $this->pathDirectories();
+        $this->pathDirectoriesInspected = count($pathDirectories);
         foreach ($this->discoverPhpCommands(array_keys($knownPaths), $pathDirectories) as $command) {
             $commands[] = $command;
             $this->phpCommands[] = $command;
         }
 
+        $probedRuntimePaths = [];
         foreach ($commands as $command) {
             $path = $command->executablePath();
-            if (!$this->isFile($path) || is_link($this->path($path))) {
+            if (!$this->isFile($path)) {
+                continue;
+            }
+            $isRuntimeProbe = $command->isPhpCli() || $command->isFpm();
+            $pathInRoot = $this->path($path);
+            $realPath = realpath($pathInRoot);
+            if ($realPath === false) {
+                if ($isRuntimeProbe) {
+                    $this->runtimeDiscoveryIncomplete = true;
+                }
+                continue;
+            }
+            if (is_link($pathInRoot)) {
+                $kind = $command->isFpm() ? 'fpm' : 'cli';
+                if (!$isRuntimeProbe || !$this->isSafeRuntimeSymlink($path, $kind)) {
+                    if ($isRuntimeProbe) {
+                        $this->runtimeDiscoveryIncomplete = true;
+                    }
+                    continue;
+                }
+                if ($this->hasRegularRuntimeCommandForRealPath($commands, $realPath)) {
+                    continue;
+                }
+            }
+            if ($isRuntimeProbe && isset($probedRuntimePaths[$realPath])) {
                 continue;
             }
             $result = $this->processRunner->run($command);
-            if ($command instanceof DiscoveredPhpCommand && !$result->succeeded()) {
-                $this->runtimeDiscoveryIncomplete = true;
+            if ($isRuntimeProbe) {
+                $probedRuntimePaths[$realPath] = true;
+                if (!$result->succeeded()) {
+                    $this->runtimeDiscoveryIncomplete = true;
+                }
             }
             $this->processResults[$command->id()] = $result;
             $source = $this->addSource(
@@ -242,15 +289,23 @@ final class RuntimeInventoryCollector
                 'error_category' => $this->commandErrorCategory($result),
             ], $source);
         }
+    }
+
+    private function recordRuntimeDiscoveryFacts(): void
+    {
         $discoverySource = $this->addSource('other', 'runtime-command-discovery', json_encode([
             'truncated' => $this->runtimeDiscoveryTruncated,
             'incomplete' => $this->runtimeDiscoveryIncomplete,
+            'cli_probe_incomplete' => $this->cliProbeIncomplete,
+            'fpm_probe_incomplete' => $this->fpmProbeIncomplete,
             'candidate_count' => count($this->phpCommands),
-            'path_directories_inspected' => count($pathDirectories),
+            'path_directories_inspected' => $this->pathDirectoriesInspected,
         ], JSON_THROW_ON_ERROR));
         $this->addFact('runtime.discovery.truncated', $this->runtimeDiscoveryTruncated, $discoverySource);
         $this->addFact('runtime.discovery.incomplete', $this->runtimeDiscoveryIncomplete, $discoverySource);
-        $this->addFact('runtime.discovery.path_directories_inspected', count($pathDirectories), $discoverySource);
+        $this->addFact('runtime.discovery.cli_probe_incomplete', $this->cliProbeIncomplete, $discoverySource);
+        $this->addFact('runtime.discovery.fpm_probe_incomplete', $this->fpmProbeIncomplete, $discoverySource);
+        $this->addFact('runtime.discovery.path_directories_inspected', $this->pathDirectoriesInspected, $discoverySource);
         $this->addFact('runtime.discovery.path_candidate_count', $this->pathCandidateCount, $discoverySource);
     }
 
@@ -271,7 +326,7 @@ final class RuntimeInventoryCollector
             $this->scanRuntimeDirectory($directory, $directory, $known, $found, $visited);
         }
         foreach ($pathDirectories as $directory) {
-            if ($this->isSupportedRuntimeDirectory($directory)) {
+            if ($this->isSupportedRuntimeDirectory($directory) || $this->isKnownSystemPathAlias($directory)) {
                 continue;
             }
             $this->scanRuntimeDirectory($directory, $directory, $known, $found, $visited, $pathDirectories, false);
@@ -399,11 +454,16 @@ final class RuntimeInventoryCollector
                     ? 'cli'
                     : (preg_match('/\Aphp-fpm(?:[0-9]+(?:\.[0-9]+){0,2})?\z/', $name) === 1 ? 'fpm' : null);
                 if ($kind === null) {
+                    if (self::isMalformedPhpRuntimeName($name)) {
+                        $this->runtimeDiscoveryIncomplete = true;
+                    }
                     continue;
                 }
                 $path = $commandDirectory . '/' . $name;
                 if ($entry->isLink()) {
-                    $this->runtimeDiscoveryIncomplete = true;
+                    if (!isset($known[$path]) || !$this->isSafeRuntimeSymlink($path, $kind)) {
+                        $this->runtimeDiscoveryIncomplete = true;
+                    }
                     continue;
                 }
                 if (!$entry->isFile() || isset($known[$path]) || isset($found[$path])) {
@@ -418,7 +478,7 @@ final class RuntimeInventoryCollector
                     return;
                 }
                 try {
-                    $found[$path] = DiscoveredPhpCommand::fromPath($path, $kind, $pathDirectories);
+                    $found[$path] = DiscoveredPhpCommand::fromPath($path, $kind);
                 } catch (\InvalidArgumentException) {
                     $this->runtimeDiscoveryIncomplete = true;
                 }
@@ -428,9 +488,76 @@ final class RuntimeInventoryCollector
         }
     }
 
+    /** @param list<ProcessCommandSpec> $commands */
+    private function hasRegularRuntimeCommandForRealPath(array $commands, string $realPath): bool
+    {
+        foreach ($commands as $command) {
+            if (!$command->isPhpCli() && !$command->isFpm()) {
+                continue;
+            }
+            $candidatePath = $this->path($command->executablePath());
+            if (is_link($candidatePath) || realpath($candidatePath) !== $realPath) {
+                continue;
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private function isSafeRuntimeSymlink(string $path, string $kind): bool
+    {
+        $realPath = realpath($this->path($path));
+        if ($realPath === false || !$this->withinRoot($realPath) || !is_file($realPath)) {
+            return false;
+        }
+        $relativePath = $this->rootRealPath === DIRECTORY_SEPARATOR
+            ? $realPath
+            : substr($realPath, strlen($this->rootRealPath));
+        $basenamePattern = $kind === 'fpm'
+            ? '/\Aphp-fpm(?:[0-9]+(?:\.[0-9]+){0,2})?(?:-[A-Za-z0-9._+-]{1,64})?\z/'
+            : '/\Aphp(?:[0-9]+(?:\.[0-9]+){0,2})?(?:-[A-Za-z0-9._+-]{1,64})?\z/';
+
+        return $this->isSupportedRuntimeDirectory(dirname($relativePath))
+            && preg_match($basenamePattern, basename($relativePath)) === 1;
+    }
+
     private function isSupportedRuntimeDirectory(string $directory): bool
     {
         return preg_match('~\A/(?:usr/bin|usr/local/bin|usr/sbin|usr/local/sbin|opt/remi/php[0-9]{2,3}/root/usr/(?:bin|sbin))\z~', $directory) === 1;
+    }
+
+    private function isKnownSystemPathAlias(string $directory): bool
+    {
+        $expectedTarget = match ($directory) {
+            '/bin' => '/usr/bin',
+            '/sbin' => '/usr/sbin',
+            default => null,
+        };
+        if ($expectedTarget === null) {
+            return false;
+        }
+
+        $path = $this->path($directory);
+        if (!is_link($path)) {
+            return false;
+        }
+        $realPath = realpath($path);
+        if ($realPath === false || !$this->withinRoot($realPath) || !is_dir($realPath)) {
+            return false;
+        }
+        $relativePath = $this->rootRealPath === DIRECTORY_SEPARATOR
+            ? $realPath
+            : substr($realPath, strlen($this->rootRealPath));
+        $canonicalPath = '/' . ltrim(str_replace(DIRECTORY_SEPARATOR, '/', $relativePath), '/');
+
+        return $canonicalPath === $expectedTarget;
+    }
+
+    private static function isMalformedPhpRuntimeName(string $name): bool
+    {
+        return preg_match('/\A(?:php[0-9.]+|php-fpm[0-9.]+)/', $name) === 1;
     }
 
     private function recordUnprobedPathCandidate(string $path, string $kind): void
@@ -483,17 +610,27 @@ final class RuntimeInventoryCollector
                 DuplicateJsonKeyGuard::assertNoDuplicates($result->stdout);
                 $data = json_decode($result->stdout, true, 8, JSON_THROW_ON_ERROR);
             } catch (\Throwable) {
+                $this->runtimeDiscoveryIncomplete = true;
+                $this->cliProbeIncomplete = true;
                 continue;
             }
             if (!is_array($data) || !is_string($data['version'] ?? null) || !is_string($data['sapi'] ?? null)) {
+                $this->runtimeDiscoveryIncomplete = true;
+                $this->cliProbeIncomplete = true;
                 continue;
             }
             $version = self::safePhpVersion($data['version']);
             $sapi = self::safeToken($data['sapi'], 32);
             if ($version === null || $sapi === null || $sapi !== 'cli') {
+                $this->runtimeDiscoveryIncomplete = true;
+                $this->cliProbeIncomplete = true;
                 continue;
             }
             $extensions = $this->safeExtensions($data['extensions'] ?? null);
+            if ($extensions === null) {
+                $this->runtimeDiscoveryIncomplete = true;
+                $this->cliProbeIncomplete = true;
+            }
             $sourceId = $this->sourceIdFor('argv:' . $command->id());
             $runtime = [
                 'id' => 'cli-' . substr(hash('sha256', $command->executablePath()), 0, 20),
@@ -515,7 +652,33 @@ final class RuntimeInventoryCollector
         return $runtimes;
     }
 
-    /** @return array{manager: string|null, state: string, packages: list<array{name: string, version: string}>} */
+    /** @return list<RuntimeFpmExecutable> */
+    private function collectFpmExecutables(): array
+    {
+        $executables = [];
+        foreach ($this->phpCommands as $command) {
+            if (!$command->isFpm() || !isset($this->processResults[$command->id()])) {
+                continue;
+            }
+            $executableId = 'fpm-executable-' . substr(hash('sha256', $command->executablePath()), 0, 20);
+            $version = $this->fpmVersionForPath($command->executablePath());
+            $prefix = 'runtime.fpm_executable.' . (count($executables) + 1);
+            $sourceId = $this->sourceIdFor('argv:' . $command->id());
+            $executable = [
+                'id' => $executableId,
+                'binary_path' => $command->executablePath(),
+                'version' => $version,
+            ];
+            $executables[] = $executable;
+            $this->addFact($prefix . '.id', $executableId, $sourceId);
+            $this->addFact($prefix . '.binary_path', $executable['binary_path'], $sourceId);
+            $this->addFact($prefix . '.version', $version, $sourceId);
+        }
+
+        return $executables;
+    }
+
+    /** @return array{manager: string|null, state: string, packages: list<RuntimePackage>} */
     private function collectPackages(): array
     {
         $manager = null;
@@ -549,7 +712,11 @@ final class RuntimeInventoryCollector
         }
 
         $packages = [];
-        foreach (preg_split('/\r?\n/', trim($result->stdout)) ?: [] as $line) {
+        $packageIdentityCounts = [];
+        $ambiguousIdentities = [];
+        $packageOutput = trim($result->stdout);
+        $packageLines = $packageOutput === '' ? [] : preg_split('/\r?\n/', $packageOutput);
+        foreach ($packageLines ?: [] as $line) {
             if ($manager === 'apk') {
                 $parts = preg_split('/-(?=[0-9]+\.[0-9]+)/', trim($line), 2);
                 if (!is_array($parts) || count($parts) !== 2) {
@@ -558,6 +725,28 @@ final class RuntimeInventoryCollector
             } else {
                 $parts = explode("\t", $line);
                 if (count($parts) < 2) {
+                    $this->packageInventoryIncomplete = true;
+                    continue;
+                }
+            }
+            if ($manager === 'dpkg') {
+                if (count($parts) !== 4 || !DpkgPackageStatus::hasValidFields($parts[2])) {
+                    $this->packageInventoryIncomplete = true;
+                    continue;
+                }
+                if (!DpkgPackageStatus::isInstalled($parts[2])) {
+                    if (!DpkgPackageStatus::isAbsent($parts[2])) {
+                        $this->packageInventoryIncomplete = true;
+                    }
+                    continue;
+                }
+                if (!DpkgPackageStatus::hasVerifiedIntegrityStatus($parts[2])) {
+                    $this->packageInventoryIncomplete = true;
+                }
+            }
+            if ($manager === 'rpm') {
+                if (count($parts) !== 3) {
+                    $this->packageInventoryIncomplete = true;
                     continue;
                 }
             }
@@ -566,10 +755,41 @@ final class RuntimeInventoryCollector
             if ($name === null || $version === null || !self::isPhpPackageName($name)) {
                 continue;
             }
-            $packages[] = ['name' => $name, 'version' => $version];
+            $architecture = match ($manager) {
+                'dpkg' => self::safePackageArchitecture(trim($parts[3]), true),
+                'rpm' => self::safePackageArchitecture(trim($parts[2]), false),
+                default => null,
+            };
+            if (in_array($manager, ['dpkg', 'rpm'], true) && $architecture === null) {
+                $this->packageInventoryIncomplete = true;
+                continue;
+            }
+            $packages[] = ['name' => $name, 'version' => $version, 'architecture' => $architecture];
+            $identity = $name . "\0" . $version . "\0" . ($architecture ?? '');
+            $packageIdentityCounts[$identity] = ($packageIdentityCounts[$identity] ?? 0) + 1;
+        }
+        if ($packageIdentityCounts !== []) {
+            $ambiguousIdentities = array_fill_keys(array_keys(array_filter(
+                $packageIdentityCounts,
+                static fn(int $count): bool => $count > 1,
+            )), true);
+            if ($ambiguousIdentities !== []) {
+                $this->packageIdentityAmbiguous = true;
+                $this->packageInventoryIncomplete = true;
+                $packages = array_values(array_filter(
+                    $packages,
+                    static fn(array $package): bool => !isset(
+                        $ambiguousIdentities[$package['name'] . "\0" . $package['version'] . "\0" . ($package['architecture'] ?? '')],
+                    ),
+                ));
+            }
         }
         $source = $this->sourceIdFor('argv:' . $command->id());
-        $this->addFact('packages.state', 'attempted', $source);
+        $inventoryState = $this->packageInventoryIncomplete ? 'incomplete' : 'attempted';
+        $this->addFact('packages.state', $inventoryState, $source);
+        $this->addFact('packages.incomplete', $this->packageInventoryIncomplete, $source);
+        $this->addFact('packages.identity_ambiguous', $this->packageIdentityAmbiguous, $source);
+        $this->addFact('packages.identity_ambiguous_count', count($ambiguousIdentities), $source);
         $this->addFact('packages.manager', $manager, $source);
         $this->addFact('packages.inventory_count', count($packages), $source);
         $this->packageInventoryTruncated = count($packages) > 256;
@@ -577,9 +797,10 @@ final class RuntimeInventoryCollector
         foreach (array_slice($packages, 0, 256) as $index => $package) {
             $this->addFact('package.' . $index . '.name', $package['name'], $source);
             $this->addFact('package.' . $index . '.version', $package['version'], $source);
+            $this->addFact('package.' . $index . '.architecture', $package['architecture'], $source);
         }
 
-        return ['manager' => $manager, 'state' => 'attempted', 'packages' => array_slice($packages, 0, 256)];
+        return ['manager' => $manager, 'state' => $inventoryState, 'packages' => array_slice($packages, 0, 256)];
     }
 
     /**
@@ -658,14 +879,30 @@ final class RuntimeInventoryCollector
             $commandIdentity = $kind === 'fpm'
                 ? $this->fpmCommandIdentity($cmdline, $executableCandidate)
                 : 'unavailable';
+            $fpmConfiguration = $kind === 'fpm'
+                ? $this->fpmConfigurationEvidence($cmdline)
+                : ['path' => null, 'state' => 'unavailable', 'pool_name' => null];
+            $poolTitleWithoutExecutable = $kind === 'fpm'
+                && $executableCandidate === null
+                && $commandIdentity === 'unavailable'
+                && $fpmConfiguration['state'] === 'pool'
+                && $fpmConfiguration['pool_name'] !== null;
+            $commandSource = null;
             if ($kind === 'fpm') {
                 $commandSource = $this->addSource('other', $base . '/cmdline', $cmdline);
                 $this->addFact('worker.' . (count($workers) + 1) . '.command_identity', $commandIdentity, $commandSource);
             }
             $processExecutableMatches = $processExecutableMatches && $commandIdentity !== 'conflict';
+            if ($poolTitleWithoutExecutable) {
+                // The kernel can deny access to a worker's exe link after FPM drops privileges.
+                // Its pool title remains usable only when the evaluator can bind it to a captured master.
+                $processExecutableMatches = true;
+            }
             $maps = $kind === 'apache' ? $this->readFile($base . '/maps', self::MAX_FILE_BYTES) : null;
-            $moduleEvidence = $maps === null ? ['paths' => null, 'deleted' => null] : $this->apachePhpModules($maps);
+            $moduleEvidence = $maps === null ? ['paths' => null, 'deleted' => null, 'deleted_paths' => null] : $this->apachePhpModules($maps);
+            $namespaceEvidence = $this->workerNamespaceEvidence($base);
             $versionCandidate = $identityBeforeMatches && $processExecutableMatches && $kind === 'fpm'
+                && $namespaceEvidence['verified']
                 && $commandIdentity !== 'unknown' && $deletedCandidate === false
                 ? $this->fpmVersionForPath($executableCandidate)
                 : null;
@@ -675,14 +912,26 @@ final class RuntimeInventoryCollector
             $integrityResult = match (true) {
                 $kind === 'fpm' && $versionCandidate !== null
                     => $integrity->check($distribution, $manager, $packages, $executableCandidate, $base),
+                $kind === 'fpm' && $identityBeforeMatches && $processExecutableMatches
+                    && !$namespaceEvidence['verified']
+                    => ['provenance' => RuntimePackageProvenance::unknown('worker_namespace_identity_unverified'), 'sources' => []],
                 $kind === 'apache' && $identityBeforeMatches && $apacheModulePath !== null
+                    && $namespaceEvidence['verified']
                     => $integrity->checkApacheModule($distribution, $manager, $packages, $apacheModulePath, $moduleEvidence['deleted']),
+                $kind === 'apache' && $identityBeforeMatches && $apacheModulePath !== null
+                    => ['provenance' => RuntimePackageProvenance::unknown('worker_namespace_identity_unverified'), 'sources' => []],
                 default => ['provenance' => RuntimePackageProvenance::unknown('runtime_identity_unavailable'), 'sources' => []],
             };
+            $namespaceSource = $this->addSource(
+                'file',
+                '/proc/self/ns/mnt,/proc/self/root,' . $base . '/ns/mnt,' . $base . '/root',
+                $namespaceEvidence['evidence'],
+            );
             $provenance = $integrityResult['provenance'];
             foreach ($integrityResult['sources'] as $integritySource) {
                 $provenance['evidence_source_ids'][] = $this->addSource('file', $integritySource['locator'], $integritySource['content']);
             }
+            $provenance['evidence_source_ids'][] = $namespaceSource;
             $statAfter = $this->readFile($base . '/stat', 8192);
             $identityAfter = $statAfter === null ? null : $this->processIdentity($statAfter);
             $identityStable = $identityBeforeMatches
@@ -696,6 +945,7 @@ final class RuntimeInventoryCollector
             $deleted = $identityStable ? $deletedCandidate : null;
             $modules = $identityStable ? $moduleEvidence['paths'] : null;
             $moduleDeleted = $identityStable ? $moduleEvidence['deleted'] : null;
+            $moduleDeletedPaths = $identityStable ? $moduleEvidence['deleted_paths'] : null;
             $startTicks = $identityStable ? ($identityBefore['start_ticks'] ?? null) : null;
             $version = $identityStable ? $versionCandidate : null;
             $workerDetailsIncomplete = !$identityStable || !is_string($exeLink) || $executable === null;
@@ -713,26 +963,46 @@ final class RuntimeInventoryCollector
             $worker = [
                 'id' => 'worker-' . (int) $entry . '-' . ($startTicks === null ? 'unknown' : $startTicks),
                 'pid' => (int) $entry,
+                'parent_pid' => $identityStable ? ($identityBefore['parent_pid'] ?? null) : null,
                 'kind' => $kind,
                 'process_name' => self::safeToken($name, 128),
                 'executable_path' => $executable,
                 'executable_deleted' => $deleted,
                 'version' => $version,
+                'fpm_configuration_path' => $identityStable && $kind === 'fpm' ? $fpmConfiguration['path'] : null,
+                'fpm_configuration_state' => $identityStable && $kind === 'fpm' ? $fpmConfiguration['state'] : 'unavailable',
+                'fpm_pool_name' => $identityStable && $kind === 'fpm' ? $fpmConfiguration['pool_name'] : null,
                 'apache_php_modules' => $modules,
                 'apache_php_module_deleted' => $moduleDeleted,
+                'apache_php_module_deleted_paths' => $moduleDeletedPaths,
                 'process_start_ticks_since_boot' => $startTicks,
                 'package_provenance' => $provenance,
+                'worker_namespace_verified' => $namespaceEvidence['verified'],
             ];
+            if ($kind === 'apache') {
+                $worker['apache_namespace_verified'] = $namespaceEvidence['verified'];
+            }
             $workers[] = $worker;
             $prefix = 'worker.' . count($workers);
             $this->addFact($prefix . '.id', $worker['id'], $source);
+            $this->addFact($prefix . '.parent_pid', $worker['parent_pid'], $source);
             $this->addFact($prefix . '.kind', $kind, $source);
             $this->addFact($prefix . '.process_name', $worker['process_name'], $source);
             $this->addFact($prefix . '.executable_path', $executable, $source);
             $this->addFact($prefix . '.executable_deleted', $deleted, $source);
             $this->addFact($prefix . '.version', $version, $source);
+            if (is_string($commandSource)) {
+                $this->addFact($prefix . '.fpm_configuration_path', $worker['fpm_configuration_path'], $commandSource);
+                $this->addFact($prefix . '.fpm_configuration_state', $worker['fpm_configuration_state'], $commandSource);
+                $this->addFact($prefix . '.fpm_pool_name', $worker['fpm_pool_name'], $commandSource);
+            }
             $this->addFact($prefix . '.apache_php_modules', $modules, $source);
             $this->addFact($prefix . '.apache_php_module_deleted', $moduleDeleted, $source);
+            $this->addFact($prefix . '.apache_php_module_deleted_paths', $moduleDeletedPaths, $source);
+            $this->addFact($prefix . '.namespace_verified', $namespaceEvidence['verified'], $namespaceSource);
+            if ($kind === 'apache') {
+                $this->addFact($prefix . '.apache_namespace_verified', $namespaceEvidence['verified'], $namespaceSource);
+            }
             $this->addFact($prefix . '.start_ticks_since_boot', $startTicks, $source);
             $provenanceSource = $this->addSource('other', $base . ':package-provenance', json_encode($provenance, JSON_THROW_ON_ERROR));
             $this->addFact($prefix . '.package_provenance', $provenance, $provenanceSource);
@@ -804,21 +1074,53 @@ final class RuntimeInventoryCollector
             }
         }
         $workerGap = $workerGaps === [] ? null : implode(' ', array_values(array_unique($workerGaps)));
+        $cliEvidenceIds = $this->factIdsForPrefixAndSuffix('runtime.cli.', '.id');
+        $discoveryEvidenceIds = $this->factIdsForKeys([
+            'runtime.discovery.truncated',
+            'runtime.discovery.incomplete',
+            'runtime.discovery.cli_probe_incomplete',
+            'runtime.discovery.fpm_probe_incomplete',
+            'runtime.discovery.path_directories_inspected',
+            'runtime.discovery.path_candidate_count',
+        ]);
+        $discoveryGaps = [];
+        if ($this->runtimeDiscoveryTruncated) {
+            $discoveryGaps[] = 'Runtime binary discovery reached its configured PATH, directory, or command limit; additional PHP installations may be omitted.';
+        }
+        if ($this->runtimeDiscoveryIncomplete) {
+            $discoveryGaps[] = 'One or more PATH entries, runtime directories, or candidate binaries could not be inspected safely; unobserved installations remain unknown.';
+        }
+        if ($this->cliProbeIncomplete) {
+            $discoveryGaps[] = 'One or more successful PHP CLI probes returned malformed or ambiguous runtime data; those subjects remain unknown.';
+        }
+        if ($this->fpmProbeIncomplete) {
+            $discoveryGaps[] = 'One or more successful PHP FPM probes returned malformed or ambiguous runtime data; those subjects remain unknown.';
+        }
+        if ($this->packageInventoryTruncated) {
+            $packageCoverageGap = 'The package inventory exceeded its configured record limit; omitted package subjects remain unknown.';
+        } elseif ($this->packageIdentityAmbiguous) {
+            $packageCoverageGap = 'Multiple package rows shared the same name, version, and architecture; ambiguous package subjects were omitted.';
+        } elseif ($this->packageInventoryIncomplete) {
+            $packageCoverageGap = 'One or more package rows had an unverified or transitional status, malformed metadata, or could not be assigned a trusted identity; affected subjects remain unknown.';
+        } else {
+            $packageCoverageGap = $packageState['state'] === 'attempted'
+                ? null
+                : 'No supported package database query produced a complete package inventory.';
+        }
 
         return [
             [
                 'check_id' => 'runtime.cli',
                 'status' => $runtimes === [] ? 'blocked' : 'attempted',
-                'evidence_ids' => $runtimes === [] ? [] : $this->factIdsForPrefix('runtime.cli.'),
+                // One stable identity fact per runtime keeps coverage bounded while all runtime facts remain in observations.
+                'evidence_ids' => $runtimes === [] ? [] : $cliEvidenceIds,
                 'gap' => $runtimes === [] ? 'No allowlisted PHP CLI binary produced a valid runtime report.' : null,
             ],
             [
                 'check_id' => 'runtime.packages',
                 'status' => $packageState['state'] === 'attempted' && !$this->packageInventoryTruncated ? 'attempted' : 'blocked',
                 'evidence_ids' => $this->factIdsForPrefix('packages.'),
-                'gap' => $this->packageInventoryTruncated
-                    ? 'The package inventory exceeded its configured record limit; omitted package subjects remain unknown.'
-                    : ($packageState['state'] === 'attempted' ? null : 'No supported package database query produced a complete package inventory.'),
+                'gap' => $packageCoverageGap,
             ],
             [
                 'check_id' => 'runtime.workers',
@@ -839,12 +1141,9 @@ final class RuntimeInventoryCollector
             [
                 'check_id' => 'runtime.discovery',
                 'status' => $this->runtimeDiscoveryIncomplete || $this->runtimeDiscoveryTruncated ? 'blocked' : 'attempted',
-                'evidence_ids' => $this->factIdsForPrefix('runtime.discovery.'),
-                'gap' => $this->runtimeDiscoveryTruncated
-                    ? 'Runtime binary discovery reached its configured PATH, directory, or command limit; additional PHP installations may be omitted.'
-                    : ($this->runtimeDiscoveryIncomplete
-                        ? 'One or more PATH entries, runtime directories, or candidate binaries could not be inspected safely; unobserved installations remain unknown.'
-                        : null),
+                // Detailed path candidates remain in observations; the bounded summary facts support this host-level check.
+                'evidence_ids' => $discoveryEvidenceIds,
+                'gap' => $discoveryGaps === [] ? null : implode(' ', $discoveryGaps),
             ],
         ];
     }
@@ -862,14 +1161,54 @@ final class RuntimeInventoryCollector
         return $ids;
     }
 
+    /** @return list<string> */
+    private function factIdsForPrefixAndSuffix(string $prefix, string $suffix): array
+    {
+        $ids = [];
+        foreach ($this->facts as $fact) {
+            if (str_starts_with($fact['key'], $prefix) && str_ends_with($fact['key'], $suffix)) {
+                $ids[] = $fact['fact_id'];
+            }
+        }
+
+        return $ids;
+    }
+
+    /** @param non-empty-list<string> $keys
+     * @return list<string>
+     */
+    private function factIdsForKeys(array $keys): array
+    {
+        $wanted = array_fill_keys($keys, true);
+        $ids = [];
+        foreach ($this->facts as $fact) {
+            if (isset($wanted[$fact['key']])) {
+                $ids[] = $fact['fact_id'];
+            }
+        }
+
+        return $ids;
+    }
+
     /** @return RuntimeConfigurationCollection */
     private function collectConfiguration(): array
     {
         $files = $this->configurationFiles();
         $this->configurationFilesFound = count($files);
+        $fpmSymlinkRoots = array_values(array_unique($this->fpmConfigurationSymlinkRoots));
+        sort($fpmSymlinkRoots, SORT_STRING);
+        if ($fpmSymlinkRoots !== []) {
+            $source = $this->addSource(
+                'other',
+                'configuration:fpm-entrypoint-symlinks',
+                json_encode($fpmSymlinkRoots, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            );
+            $this->addFact('configuration.fpm_entrypoint_symlink_roots', $fpmSymlinkRoots, $source);
+        }
         $values = [];
         $sapiValues = ['cli' => [], 'fpm' => [], 'apache2' => []];
         $extensions = [];
+        $extensionKeys = [];
         $readableFiles = 0;
         foreach ($files as $file) {
             $contents = $this->readFile($file, self::MAX_CONFIG_FILE_BYTES);
@@ -903,6 +1242,15 @@ final class RuntimeInventoryCollector
                 }
             }
             foreach ($this->parseConfiguredExtensions($contents) as $extension) {
+                $extensionKey = $file . "\0" . $extension;
+                if (isset($extensionKeys[$extensionKey])) {
+                    continue;
+                }
+                if (count($extensions) >= self::MAX_CONFIGURED_EXTENSIONS) {
+                    $this->configurationDiscoveryIncomplete = true;
+                    break 2;
+                }
+                $extensionKeys[$extensionKey] = true;
                 $extensions[] = ['name' => $extension, 'file' => $file];
             }
         }
@@ -930,6 +1278,7 @@ final class RuntimeInventoryCollector
                 'state' => $state,
                 'files' => array_column($entries, 'file'),
                 'observations' => $observations,
+                'evidence_source_ids' => array_values(array_unique(array_column($entries, 'source_id'))),
             ];
             $evidence = json_encode($result[$name], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
             $sourceId = $this->addSource('other', 'configuration:' . $name, $evidence);
@@ -963,6 +1312,7 @@ final class RuntimeInventoryCollector
                     'state' => $state,
                     'files' => array_column($entries, 'file'),
                     'observations' => $observations,
+                    'evidence_source_ids' => array_values(array_unique(array_column($entries, 'source_id'))),
                 ];
                 $evidence = json_encode($bySapi[$sapi][$name], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
                 $sourceId = $this->addSource('other', 'configuration:' . $sapi . ':' . $name, $evidence);
@@ -1029,7 +1379,14 @@ final class RuntimeInventoryCollector
             '/usr/local/etc/php/conf.d/99-runtime-audit.ini',
             '/etc/php-fpm.conf', '/usr/local/etc/php-fpm.conf',
         ];
-        foreach (['/etc/php', '/etc/opt/remi', '/usr/local/etc/php', '/etc/php.d', '/etc/php-fpm.d', '/usr/local/etc/php-fpm.d'] as $base) {
+        $configurationRoots = ['/etc/php', '/etc/opt/remi', '/usr/local/etc/php', '/etc/php.d', '/etc/php-fpm.d', '/usr/local/etc/php-fpm.d'];
+        foreach ($this->phpCommands as $command) {
+            if ($command->isFpm()
+                && preg_match('~\A/usr/sbin/php-fpm([0-9]{2,3})\z~', $command->executablePath(), $matches) === 1) {
+                $configurationRoots[] = '/etc/php' . $matches[1];
+            }
+        }
+        foreach (array_values(array_unique($configurationRoots)) as $base) {
             $basePath = $this->path($base);
             if (is_link($basePath)) {
                 $this->configurationDiscoveryIncomplete = true;
@@ -1064,8 +1421,12 @@ final class RuntimeInventoryCollector
                         $path = $fileInfo->getPathname();
                         if ($fileInfo->isLink()) {
                             $entry = $fileInfo->getFilename();
+                            if ($entry === 'php-fpm.conf') {
+                                $this->recordSymlinkedFpmEntrypoint($path);
+                            }
                             if ($fileInfo->isDir()
                                 || $entry === 'php.ini'
+                                || $entry === 'php-fpm.conf'
                                 || $this->isConfigurationFragment($path, $entry)) {
                                 $this->configurationDiscoveryIncomplete = true;
                             }
@@ -1116,6 +1477,9 @@ final class RuntimeInventoryCollector
         foreach ($candidates as $candidate) {
             $path = $this->path($candidate);
             if (is_link($path)) {
+                if (basename($candidate) === 'php-fpm.conf') {
+                    $this->recordSymlinkedFpmEntrypoint($path);
+                }
                 $this->configurationDiscoveryIncomplete = true;
                 continue;
             }
@@ -1125,6 +1489,13 @@ final class RuntimeInventoryCollector
         }
 
         return $files;
+    }
+
+    private function recordSymlinkedFpmEntrypoint(string $path): void
+    {
+        $relative = substr($path, strlen($this->rootRealPath));
+        $configurationPath = '/' . ltrim(str_replace(DIRECTORY_SEPARATOR, '/', $relative), '/');
+        $this->fpmConfigurationSymlinkRoots[] = dirname($configurationPath);
     }
 
     private function isConfigurationFragment(string $path, string $entry): bool
@@ -1142,7 +1513,7 @@ final class RuntimeInventoryCollector
     private function parseSafeFpmPools(string $contents): array
     {
         // Section identity must survive key normalization: each pool has its own values.
-        // Keep admin/value namespaces separate because their precedence is not evaluated.
+        // Keep directive namespaces separate because their precedence is not evaluated.
         $pools = [];
         $section = 'unscoped';
         foreach (preg_split('/\r?\n/', $contents) ?: [] as $lineNumber => $line) {
@@ -1175,7 +1546,7 @@ final class RuntimeInventoryCollector
                 }
                 $pools[$section] = [];
             }
-            $kind = preg_match('/\A\s*(php_(?:admin_)?value)\[/i', $line, $matches) === 1
+            $kind = preg_match('/\A\s*(php_(?:admin_)?(?:value|flag))\[/i', $line, $matches) === 1
                 ? strtolower($matches[1])
                 : 'ini';
             foreach ($settings as $name => $value) {
@@ -1225,7 +1596,7 @@ final class RuntimeInventoryCollector
             if (preg_match('/\A\s*([a-zA-Z0-9_.-]{1,64})\s*=\s*(.*?)\s*\z/', $line, $matches) === 1) {
                 $name = strtolower($matches[1]);
                 $rawValue = $matches[2];
-            } elseif (preg_match('/\A\s*php_(?:admin_)?value\[([a-zA-Z0-9_.-]{1,64})\]\s*=\s*(.*?)\s*\z/i', $line, $matches) === 1) {
+            } elseif (preg_match('/\A\s*php_(?:admin_)?(?:value|flag)\[([a-zA-Z0-9_.-]{1,64})\]\s*=\s*(.*?)\s*\z/i', $line, $matches) === 1) {
                 $name = strtolower($matches[1]);
                 $rawValue = $matches[2];
             }
@@ -1235,11 +1606,12 @@ final class RuntimeInventoryCollector
             if (!isset($wanted[$name])) {
                 continue;
             }
-            $value = trim($rawValue);
+            $value = self::iniValueWithoutComment($rawValue);
+            if ($value === null) {
+                continue;
+            }
             if (strlen($value) >= 2 && (($value[0] === '"' && str_ends_with($value, '"')) || ($value[0] === "'" && str_ends_with($value, "'")))) {
                 $value = substr($value, 1, -1);
-            } else {
-                $value = trim(preg_split('/[;#]/', $value, 2)[0] ?? $value);
             }
             if (strlen($value) <= 128 && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1) {
                 $settings[$name] = $value;
@@ -1249,21 +1621,66 @@ final class RuntimeInventoryCollector
         return $settings;
     }
 
+    private static function iniValueWithoutComment(string $value): ?string
+    {
+        $quote = null;
+        $escaped = false;
+        $length = strlen($value);
+        for ($index = 0; $index < $length; ++$index) {
+            $character = $value[$index];
+            if ($quote !== null) {
+                if ($escaped) {
+                    $escaped = false;
+                    continue;
+                }
+                if ($character === '\\') {
+                    $escaped = true;
+                    continue;
+                }
+                if ($character === $quote) {
+                    $quote = null;
+                }
+                continue;
+            }
+            if ($character === '"' || $character === "'") {
+                $quote = $character;
+                continue;
+            }
+            if ($character === ';' || $character === '#') {
+                return trim(substr($value, 0, $index));
+            }
+        }
+
+        return $quote === null ? trim($value) : null;
+    }
+
     /** @return list<string> */
     private function parseConfiguredExtensions(string $contents): array
     {
         $extensions = [];
-        foreach (preg_split('/\r?\n/', $contents) ?: [] as $line) {
+        $offset = 0;
+        $length = strlen($contents);
+        while ($offset < $length) {
+            $newline = strpos($contents, "\n", $offset);
+            $line = $newline === false
+                ? substr($contents, $offset)
+                : substr($contents, $offset, $newline - $offset);
+            $offset = $newline === false ? $length : $newline + 1;
             if (preg_match('/\A\s*(?:zend_)?extension\s*=\s*["\']?([^\s;"\']+)["\']?/', $line, $matches) !== 1) {
                 continue;
             }
             $name = basename($matches[1]);
             $name = preg_replace('/\.(?:so|dll|dylib)\z/i', '', $name) ?? $name;
             if (preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/', $name) === 1) {
-                $extensions[] = strtolower($name);
+                $extensions[strtolower($name)] = true;
+                if (count($extensions) > self::MAX_CONFIGURED_EXTENSIONS) {
+                    $this->configurationDiscoveryIncomplete = true;
+                    unset($extensions[array_key_last($extensions)]);
+                    break;
+                }
             }
         }
-        $extensions = array_values(array_unique($extensions));
+        $extensions = array_keys($extensions);
         sort($extensions, SORT_STRING);
 
         return $extensions;
@@ -1282,12 +1699,73 @@ final class RuntimeInventoryCollector
             if ($result === null || !$result->succeeded()) {
                 return null;
             }
-            if (preg_match('/\APHP\s+([0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z][A-Za-z0-9.+-]{0,31})?)\s+\(fpm-fcgi\)(?:\s+\(built:[^\r\n]{0,160}\))?\s*(?:\r?\n|\z)/', $result->stdout, $matches) === 1) {
-                return self::safePhpVersion($matches[1]);
+            $version = self::parseFpmProbeOutput($result->stdout);
+            if ($version !== null) {
+                return $version;
             }
+
+            $this->fpmProbeIncomplete = true;
+            $this->runtimeDiscoveryIncomplete = true;
+
+            return null;
         }
 
         return null;
+    }
+
+    private static function parseFpmProbeOutput(string $stdout): ?string
+    {
+        $stdout = preg_replace('/(?:\r\n|\n)\z/', '', $stdout, 1);
+        if (!is_string($stdout) || $stdout === '') {
+            return null;
+        }
+
+        $lines = preg_split('/\r\n|\n/', $stdout);
+        if (!is_array($lines)) {
+            return null;
+        }
+        foreach ($lines as $line) {
+            if ($line === '' || preg_match('/[\x00-\x08\x0B-\x1F\x7F]/', $line) === 1) {
+                return null;
+            }
+        }
+
+        if (preg_match(
+            '/\APHP\s+([0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z][A-Za-z0-9.+-]{0,31})?)\s+\(fpm-fcgi\)(?:\s+\(built: [A-Za-z0-9 ._:+\/-]{1,160}\))?(?:[ \t]+\([ \t]*(?:NTS|TS|ZTS)[ \t]*\))?\z/',
+            $lines[0],
+            $matches,
+        ) !== 1) {
+            return null;
+        }
+
+        $version = self::safePhpVersion($matches[1]);
+        if ($version === null) {
+            return null;
+        }
+
+        /** @var array<string, non-empty-string> $recognizedLines */
+        $recognizedLines = [
+            'php_group_copyright' => '/\ACopyright \(c\) (?:(?:19|20)[0-9]{2}(?:-(?:19|20)[0-9]{2})? )?The PHP Group\z/',
+            'built_by' => '/\ABuilt by [\x20-\x7E]{1,160}\z/',
+            'zend_engine' => '/\AZend Engine v[0-9]+\.[0-9]+\.[0-9]+, Copyright \(c\) (?:(?:19|20)[0-9]{2}(?:-(?:19|20)[0-9]{2})? )?Zend Technologies\z/',
+            'zend_opcache' => '/\A {4}with Zend OPcache v[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z][A-Za-z0-9.+-]{0,31})?, Copyright \(c\)(?: [0-9]{4}(?:-[0-9]{4})?)?, by Zend Technologies\z/',
+        ];
+        $seenLines = [];
+        foreach (array_slice($lines, 1) as $line) {
+            $recognizedLine = null;
+            foreach ($recognizedLines as $name => $pattern) {
+                if (preg_match($pattern, $line) === 1) {
+                    $recognizedLine = $name;
+                    break;
+                }
+            }
+            if ($recognizedLine === null || isset($seenLines[$recognizedLine])) {
+                return null;
+            }
+            $seenLines[$recognizedLine] = true;
+        }
+
+        return $version;
     }
 
     /** @return 'matched'|'unavailable'|'conflict'|'unknown' */
@@ -1308,7 +1786,7 @@ final class RuntimeInventoryCollector
             return 'unavailable';
         }
         $name = basename($argv0);
-        if ($name !== 'php-fpm' && self::fpmProcessVersion($name) === null) {
+        if ($name !== 'php-fpm' && FpmVersionName::fromProcessName($name) === null) {
             return 'unknown';
         }
         if (str_contains($argv0, '/')) {
@@ -1323,50 +1801,192 @@ final class RuntimeInventoryCollector
         return $this->fpmProcessNameMatchesExecutable($name, $executablePath) ? 'matched' : 'conflict';
     }
 
+    /**
+     * Configuration and package paths are attributable only when the worker and collector resolve
+     * paths from the same mount namespace and process root.
+     *
+     * @return array{verified: bool, evidence: string}
+     */
+    private function workerNamespaceEvidence(string $base): array
+    {
+        $collectorMountNamespace = $this->mountNamespaceIdentity('/proc/self/ns/mnt');
+        $workerMountNamespace = $this->mountNamespaceIdentity($base . '/ns/mnt');
+        $mountNamespaceMatches = is_string($collectorMountNamespace)
+            && preg_match('/\Amnt:\[[0-9]+\]\z/', $collectorMountNamespace) === 1
+            && $workerMountNamespace === $collectorMountNamespace;
+
+        $collectorRootStat = @stat($this->path('/proc/self/root'));
+        $workerRootStat = @stat($this->path($base . '/root'));
+        $collectorRootIdentity = is_array($collectorRootStat)
+            ? ['device' => $collectorRootStat['dev'], 'inode' => $collectorRootStat['ino']]
+            : null;
+        $workerRootIdentity = is_array($workerRootStat)
+            ? ['device' => $workerRootStat['dev'], 'inode' => $workerRootStat['ino']]
+            : null;
+        $rootMatches = $collectorRootIdentity !== null
+            && $workerRootIdentity !== null
+            && $collectorRootIdentity === $workerRootIdentity;
+        if (!$rootMatches && $this->processRunner instanceof FixtureProcessRunner) {
+            $collectorFixtureRoot = $this->fixtureRootIdentity('/proc/self/root');
+            $workerFixtureRoot = $this->fixtureRootIdentity($base . '/root');
+            if ($collectorFixtureRoot !== null && $collectorFixtureRoot === $workerFixtureRoot) {
+                $rootMatches = true;
+                $collectorRootIdentity = ['fixture_identity' => $collectorFixtureRoot];
+                $workerRootIdentity = ['fixture_identity' => $workerFixtureRoot];
+            }
+        }
+
+        return [
+            'verified' => $mountNamespaceMatches && $rootMatches,
+            'evidence' => json_encode([
+                'collector_mount_namespace' => $collectorMountNamespace,
+                'worker_mount_namespace' => $workerMountNamespace,
+                'collector_root' => $collectorRootIdentity,
+                'worker_root' => $workerRootIdentity,
+            ], JSON_THROW_ON_ERROR),
+        ];
+    }
+
+    private function mountNamespaceIdentity(string $path): ?string
+    {
+        $absolutePath = $this->path($path);
+        if ($this->processRunner instanceof FixtureProcessRunner && !is_link($absolutePath) && is_file($absolutePath)) {
+            $identity = $this->readFile($path, 64);
+        } else {
+            $identity = @readlink($absolutePath);
+        }
+        if (!is_string($identity) || preg_match('/\Amnt:\[[0-9]+\]\z/', trim($identity)) !== 1) {
+            return null;
+        }
+
+        return trim($identity);
+    }
+
+    private function fixtureRootIdentity(string $path): ?string
+    {
+        $absolutePath = $this->path($path);
+        if (is_link($absolutePath) || !is_file($absolutePath)) {
+            return null;
+        }
+        $identity = $this->readFile($path, 96);
+        if ($identity === null || preg_match('/\\Afixture-root:[a-zA-Z0-9._-]{1,64}\\z/', trim($identity)) !== 1) {
+            return null;
+        }
+
+        return trim($identity);
+    }
+
+    /**
+     * Keep only the effective config path explicitly visible in argv or a rewritten master title.
+     * Pool titles do not retain that argument; the evaluator can bind them to a captured parent.
+     *
+     * @return array{path: string|null, state: 'default'|'observed'|'pool'|'unavailable', pool_name: string|null}
+     */
+    private function fpmConfigurationEvidence(?string $cmdline): array
+    {
+        if ($cmdline === null || $cmdline === '' || !str_ends_with($cmdline, "\0")) {
+            return ['path' => null, 'state' => 'unavailable', 'pool_name' => null];
+        }
+        $arguments = explode("\0", rtrim($cmdline, "\0"));
+        $argv0 = $arguments[0];
+        if (preg_match('/\Aphp-fpm: master process \(([^()\r\n]{1,960})\)\z/', $argv0, $matches) === 1) {
+            $path = self::safeConfigurationPath(trim($matches[1]));
+
+            return $path === null
+                ? ['path' => null, 'state' => 'unavailable', 'pool_name' => null]
+                : ['path' => $path, 'state' => 'observed', 'pool_name' => null];
+        }
+        if (preg_match('/\Aphp-fpm: pool ([a-zA-Z0-9_.-]{1,128})\z/', $argv0, $matches) === 1) {
+            return ['path' => null, 'state' => 'pool', 'pool_name' => $matches[1]];
+        }
+
+        $name = basename($argv0);
+        if ($name !== 'php-fpm' && FpmVersionName::fromProcessName($name) === null) {
+            return ['path' => null, 'state' => 'unavailable', 'pool_name' => null];
+        }
+
+        $paths = [];
+        for ($index = 1, $count = count($arguments); $index < $count; ++$index) {
+            $argument = $arguments[$index];
+            if ($argument === '-y' || $argument === '--fpm-config') {
+                $path = $arguments[$index + 1] ?? null;
+                if (!is_string($path) || $path === '') {
+                    return ['path' => null, 'state' => 'unavailable', 'pool_name' => null];
+                }
+                $paths[] = $path;
+                ++$index;
+            } elseif (str_starts_with($argument, '--fpm-config=')) {
+                $paths[] = substr($argument, strlen('--fpm-config='));
+            } elseif (str_starts_with($argument, '-y') && strlen($argument) > 2) {
+                $paths[] = substr($argument, 2);
+            }
+        }
+        if ($paths === []) {
+            return ['path' => null, 'state' => 'default', 'pool_name' => null];
+        }
+        if (count($paths) !== 1) {
+            return ['path' => null, 'state' => 'unavailable', 'pool_name' => null];
+        }
+        $path = self::safeConfigurationPath($paths[0]);
+
+        return $path === null
+            ? ['path' => null, 'state' => 'unavailable', 'pool_name' => null]
+            : ['path' => $path, 'state' => 'observed', 'pool_name' => null];
+    }
+
+    private static function safeConfigurationPath(string $path): ?string
+    {
+        if ($path === '' || strlen($path) > 1024 || $path[0] !== '/' || str_contains($path, '//')
+            || preg_match('/[\x00-\x1F\x7F]/', $path) === 1) {
+            return null;
+        }
+        foreach (explode('/', substr($path, 1)) as $segment) {
+            if ($segment === '' || $segment === '.' || $segment === '..') {
+                return null;
+            }
+        }
+
+        return $path;
+    }
+
     private function fpmProcessNameMatchesExecutable(string $processName, ?string $executablePath): bool
     {
-        $processVersion = self::fpmProcessVersion(basename($processName));
+        $processVersion = FpmVersionName::fromProcessName(basename($processName));
         if ($processVersion === null) {
             return true;
         }
 
         $executableVersion = $executablePath === null
             ? null
-            : self::fpmProcessVersion(basename($executablePath));
+            : FpmVersionName::fromProcessName(basename($executablePath));
 
         return $executableVersion !== null && $processVersion === $executableVersion;
     }
 
-    private static function fpmProcessVersion(string $name): ?string
-    {
-        if (preg_match('/\Aphp-fpm([0-9]+\.[0-9]{1,2}|[0-9]{2,3})\z/i', $name, $matches) !== 1) {
-            return null;
-        }
-        if (preg_match('/\A([0-9]+)([0-9]{1,2})\z/', $matches[1], $compact) === 1) {
-            return $compact[1] . '.' . $compact[2];
-        }
-
-        return $matches[1];
-    }
-
-    /** @return array{paths: list<string>|null, deleted: bool|null} */
+    /** @return array{paths: list<string>|null, deleted: bool|null, deleted_paths: list<string>|null} */
     private function apachePhpModules(string $maps): array
     {
         $modules = [];
+        $deletedPaths = [];
         $deleted = false;
         foreach (preg_split('/\r?\n/', $maps) ?: [] as $line) {
             if (preg_match('~(/[^\s]*libphp[^\s/]*\.so)(?:\s+\(deleted\))?(?:\s|$)~', $line, $matches) === 1) {
                 $module = self::safeExecutablePath($matches[1]);
                 if ($module !== null) {
                     $modules[] = $module;
-                    $deleted = $deleted || str_contains($matches[0], '(deleted)');
+                    if (str_contains($matches[0], '(deleted)')) {
+                        $deletedPaths[] = $module;
+                        $deleted = true;
+                    }
                 }
             }
         }
         $modules = array_values(array_unique($modules));
         sort($modules, SORT_STRING);
+        $deletedPaths = array_values(array_unique($deletedPaths));
+        sort($deletedPaths, SORT_STRING);
 
-        return ['paths' => $modules, 'deleted' => $deleted];
+        return ['paths' => $modules, 'deleted' => $deleted, 'deleted_paths' => $deletedPaths];
     }
 
     /** @return ProcessIdentity|null */
@@ -1387,12 +2007,16 @@ final class RuntimeInventoryCollector
         }
         $fields = preg_split('/\s+/', trim(substr($stat, $close + 1))) ?: [];
         $startTimeIndex = 19; // proc(5): field 22, relative to the text after field 2.
-        if (!isset($fields[$startTimeIndex]) || !ctype_digit($fields[$startTimeIndex])) {
+        if (!isset($fields[1], $fields[$startTimeIndex])
+            || !ctype_digit($fields[1])
+            || strlen($fields[1]) > 10
+            || !ctype_digit($fields[$startTimeIndex])) {
             return null;
         }
 
         return [
             'pid' => (int) $pid,
+            'parent_pid' => (int) $fields[1],
             'command' => $command,
             'start_ticks' => (int) $fields[$startTimeIndex],
         ];
@@ -1413,6 +2037,7 @@ final class RuntimeInventoryCollector
         return $before !== null && $after !== null
             && $before['pid'] === $pid && $after['pid'] === $pid
             && $before['command'] === $command && $after['command'] === $command
+            && $before['parent_pid'] === $after['parent_pid']
             && $before['start_ticks'] === $after['start_ticks'];
     }
 
@@ -1443,6 +2068,19 @@ final class RuntimeInventoryCollector
         }
 
         return $value;
+    }
+
+    private static function safePackageArchitecture(string $value, bool $dpkg): ?string
+    {
+        $architecture = self::safeToken($value, 32);
+        if ($architecture === null) {
+            return null;
+        }
+        $pattern = $dpkg
+            ? '/\A[a-z0-9][a-z0-9-]{0,31}\z/i'
+            : '/\A[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,31}\z/';
+
+        return preg_match($pattern, $architecture) === 1 ? $architecture : null;
     }
 
     private static function safePhpVersion(string $value): ?string
