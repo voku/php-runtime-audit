@@ -411,14 +411,14 @@ final class RuntimeInventoryCollectorTest extends TestCase
         file_put_contents($root . '/usr/bin/php5.6', 'fixture PHP 5.6');
         file_put_contents($root . '/usr/bin/php7.4', 'fixture PHP 7.4');
         file_put_contents($root . '/usr/bin/dpkg-query', 'fixture package query');
-        file_put_contents($root . '/var/lib/dpkg/status', "Package: php5.6-cli\nStatus: install ok installed\n\nPackage: php7.4-cli\nStatus: install ok installed\n");
+        file_put_contents($root . '/var/lib/dpkg/status', "Package: php5.6-cli\nStatus: install ok installed\nArchitecture: amd64\n\nPackage: php7.4-cli\nStatus: install ok installed\nArchitecture: amd64\n");
         $php56 = DiscoveredPhpCommand::fromPath('/usr/bin/php5.6', 'cli')->id();
         $php74 = DiscoveredPhpCommand::fromPath('/usr/bin/php7.4', 'cli')->id();
         file_put_contents($root . '/commands.json', json_encode([
             'commands' => [
                 $php56 => ['exit_code' => 0, 'stdout' => '{"version":"5.6.40","sapi":"cli","extensions":[]}'],
                 $php74 => ['exit_code' => 0, 'stdout' => '{"version":"7.4.33","sapi":"cli","extensions":[]}'],
-                'dpkg-packages' => ['exit_code' => 0, 'stdout' => "php5.6-cli\t5.6.40-0+deb.sury.org+1\tinstall ok installed\nphp7.4-cli\t7.4.33-1+deb.sury.org+1\tinstall ok installed\n"],
+                'dpkg-packages' => ['exit_code' => 0, 'stdout' => "php5.6-cli\t5.6.40-0+deb.sury.org+1\tinstall ok installed\tamd64\nphp7.4-cli\t7.4.33-1+deb.sury.org+1\tinstall ok installed\tamd64\n"],
             ],
         ], JSON_THROW_ON_ERROR));
         symlink('/usr/bin/php5.6', $root . '/usr/bin/php8.1');
@@ -516,7 +516,7 @@ final class RuntimeInventoryCollectorTest extends TestCase
         file_put_contents($root . '/var/lib/dpkg/status', 'fixture package status');
         $lines = [];
         for ($index = 0; $index < 257; ++$index) {
-            $lines[] = 'php' . $index . '-cli' . "\t" . '7.4.33-' . $index . "\tinstall ok installed";
+            $lines[] = 'php' . $index . '-cli' . "\t" . '7.4.33-' . $index . "\tinstall ok installed\tamd64";
         }
         file_put_contents($root . '/commands.json', json_encode([
             'commands' => ['dpkg-packages' => ['exit_code' => 0, 'stdout' => implode("\n", $lines) . "\n"]],

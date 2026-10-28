@@ -14,13 +14,13 @@ use voku\PhpRuntimeAudit\Evidence\DuplicateJsonKeyGuard;
  *
  * @phpstan-type RuntimeCli array{id: string, kind: 'cli', binary_path: string, version: string, sapi: 'cli', extensions: list<string>|null}
  * @phpstan-type RuntimeFpmExecutable array{id: string, binary_path: string, version: string|null}
- * @phpstan-type RuntimePackage array{name: string, version: string}
+ * @phpstan-type RuntimePackage array{name: string, version: string, architecture?: string|null}
  * @phpstan-import-type PackageProvenance from RuntimePackageProvenance
- * @phpstan-type RuntimeWorker array{id: string, pid: int, parent_pid: int|null, kind: 'fpm'|'apache', process_name: string|null, executable_path: string|null, executable_deleted: bool|null, version: string|null, fpm_configuration_path: string|null, fpm_configuration_state: 'default'|'observed'|'pool'|'unavailable', fpm_pool_name: string|null, apache_php_modules: list<string>|null, apache_php_module_deleted: bool|null, apache_php_module_deleted_paths: list<string>|null, process_start_ticks_since_boot: int|null, package_provenance: PackageProvenance}
+ * @phpstan-type RuntimeWorker array{id: string, pid: int, parent_pid: int|null, kind: 'fpm'|'apache', process_name: string|null, executable_path: string|null, executable_deleted: bool|null, version: string|null, fpm_configuration_path: string|null, fpm_configuration_state: 'default'|'observed'|'pool'|'unavailable', fpm_pool_name: string|null, apache_php_modules: list<string>|null, apache_php_module_deleted: bool|null, apache_php_module_deleted_paths: list<string>|null, process_start_ticks_since_boot: int|null, package_provenance: PackageProvenance, worker_namespace_verified: bool, apache_namespace_verified?: bool}
  * @phpstan-type RuntimeSource array{source_id: string, kind: string, locator: string, captured_at: string, captured_digest: string|null, current_digest: string|null, freshness: string}
  * @phpstan-type RuntimeFact array{fact_id: string, key: string, value: mixed, source_id: string}
  * @phpstan-type RuntimeConfigObservation array{value: string, file: string, context: string, configuration_root: string|null}
- * @phpstan-type RuntimeConfigSetting array{value: string|null, state: string, files: list<string>, observations: list<RuntimeConfigObservation>}
+ * @phpstan-type RuntimeConfigSetting array{value: string|null, state: string, files: list<string>, observations: list<RuntimeConfigObservation>, evidence_source_ids?: list<string>}
  * @phpstan-type RuntimeConfigSettings array{'session.upload_progress.enabled': RuntimeConfigSetting, 'session.serialize_handler': RuntimeConfigSetting, memory_limit: RuntimeConfigSetting, post_max_size: RuntimeConfigSetting, upload_max_filesize: RuntimeConfigSetting, fatal_error_backtraces: RuntimeConfigSetting}
  * @phpstan-type RuntimeSapiConfiguration array{cli: RuntimeConfigSettings, fpm: RuntimeConfigSettings, apache2: RuntimeConfigSettings}
  * @phpstan-type ProcessIdentity array{pid: int, parent_pid: int, command: string, start_ticks: int}
@@ -678,7 +678,7 @@ final class RuntimeInventoryCollector
         return $executables;
     }
 
-    /** @return array{manager: string|null, state: string, packages: list<array{name: string, version: string}>} */
+    /** @return array{manager: string|null, state: string, packages: list<RuntimePackage>} */
     private function collectPackages(): array
     {
         $manager = null;
@@ -712,7 +712,7 @@ final class RuntimeInventoryCollector
         }
 
         $packages = [];
-        $rpmIdentityCounts = [];
+        $packageIdentityCounts = [];
         $ambiguousIdentities = [];
         $packageOutput = trim($result->stdout);
         $packageLines = $packageOutput === '' ? [] : preg_split('/\r?\n/', $packageOutput);
@@ -730,7 +730,7 @@ final class RuntimeInventoryCollector
                 }
             }
             if ($manager === 'dpkg') {
-                if (count($parts) !== 3 || !DpkgPackageStatus::hasValidFields($parts[2])) {
+                if (count($parts) !== 4 || !DpkgPackageStatus::hasValidFields($parts[2])) {
                     $this->packageInventoryIncomplete = true;
                     continue;
                 }
@@ -745,7 +745,7 @@ final class RuntimeInventoryCollector
                 }
             }
             if ($manager === 'rpm') {
-                if (count($parts) !== 3 || self::safeToken(trim($parts[2]), 32) === null) {
+                if (count($parts) !== 3) {
                     $this->packageInventoryIncomplete = true;
                     continue;
                 }
@@ -755,15 +755,22 @@ final class RuntimeInventoryCollector
             if ($name === null || $version === null || !self::isPhpPackageName($name)) {
                 continue;
             }
-            $packages[] = ['name' => $name, 'version' => $version];
-            if ($manager === 'rpm') {
-                $identity = $name . "\0" . $version;
-                $rpmIdentityCounts[$identity] = ($rpmIdentityCounts[$identity] ?? 0) + 1;
+            $architecture = match ($manager) {
+                'dpkg' => self::safePackageArchitecture(trim($parts[3]), true),
+                'rpm' => self::safePackageArchitecture(trim($parts[2]), false),
+                default => null,
+            };
+            if (in_array($manager, ['dpkg', 'rpm'], true) && $architecture === null) {
+                $this->packageInventoryIncomplete = true;
+                continue;
             }
+            $packages[] = ['name' => $name, 'version' => $version, 'architecture' => $architecture];
+            $identity = $name . "\0" . $version . "\0" . ($architecture ?? '');
+            $packageIdentityCounts[$identity] = ($packageIdentityCounts[$identity] ?? 0) + 1;
         }
-        if ($manager === 'rpm') {
+        if ($packageIdentityCounts !== []) {
             $ambiguousIdentities = array_fill_keys(array_keys(array_filter(
-                $rpmIdentityCounts,
+                $packageIdentityCounts,
                 static fn(int $count): bool => $count > 1,
             )), true);
             if ($ambiguousIdentities !== []) {
@@ -771,7 +778,9 @@ final class RuntimeInventoryCollector
                 $this->packageInventoryIncomplete = true;
                 $packages = array_values(array_filter(
                     $packages,
-                    static fn(array $package): bool => !isset($ambiguousIdentities[$package['name'] . "\0" . $package['version']]),
+                    static fn(array $package): bool => !isset(
+                        $ambiguousIdentities[$package['name'] . "\0" . $package['version'] . "\0" . ($package['architecture'] ?? '')],
+                    ),
                 ));
             }
         }
@@ -788,6 +797,7 @@ final class RuntimeInventoryCollector
         foreach (array_slice($packages, 0, 256) as $index => $package) {
             $this->addFact('package.' . $index . '.name', $package['name'], $source);
             $this->addFact('package.' . $index . '.version', $package['version'], $source);
+            $this->addFact('package.' . $index . '.architecture', $package['architecture'], $source);
         }
 
         return ['manager' => $manager, 'state' => $inventoryState, 'packages' => array_slice($packages, 0, 256)];
@@ -890,10 +900,9 @@ final class RuntimeInventoryCollector
             }
             $maps = $kind === 'apache' ? $this->readFile($base . '/maps', self::MAX_FILE_BYTES) : null;
             $moduleEvidence = $maps === null ? ['paths' => null, 'deleted' => null, 'deleted_paths' => null] : $this->apachePhpModules($maps);
-            $namespaceEvidence = $kind === 'apache'
-                ? $this->apacheWorkerNamespaceEvidence($base)
-                : ['verified' => false, 'evidence' => 'not_applicable'];
+            $namespaceEvidence = $this->workerNamespaceEvidence($base);
             $versionCandidate = $identityBeforeMatches && $processExecutableMatches && $kind === 'fpm'
+                && $namespaceEvidence['verified']
                 && $commandIdentity !== 'unknown' && $deletedCandidate === false
                 ? $this->fpmVersionForPath($executableCandidate)
                 : null;
@@ -903,6 +912,9 @@ final class RuntimeInventoryCollector
             $integrityResult = match (true) {
                 $kind === 'fpm' && $versionCandidate !== null
                     => $integrity->check($distribution, $manager, $packages, $executableCandidate, $base),
+                $kind === 'fpm' && $identityBeforeMatches && $processExecutableMatches
+                    && !$namespaceEvidence['verified']
+                    => ['provenance' => RuntimePackageProvenance::unknown('worker_namespace_identity_unverified'), 'sources' => []],
                 $kind === 'apache' && $identityBeforeMatches && $apacheModulePath !== null
                     && $namespaceEvidence['verified']
                     => $integrity->checkApacheModule($distribution, $manager, $packages, $apacheModulePath, $moduleEvidence['deleted']),
@@ -910,16 +922,16 @@ final class RuntimeInventoryCollector
                     => ['provenance' => RuntimePackageProvenance::unknown('worker_namespace_identity_unverified'), 'sources' => []],
                 default => ['provenance' => RuntimePackageProvenance::unknown('runtime_identity_unavailable'), 'sources' => []],
             };
-            if ($kind === 'apache') {
-                $integrityResult['sources'][] = [
-                    'locator' => '/proc/self/ns/mnt,/proc/self/root,' . $base . '/ns/mnt,' . $base . '/root',
-                    'content' => $namespaceEvidence['evidence'],
-                ];
-            }
+            $namespaceSource = $this->addSource(
+                'file',
+                '/proc/self/ns/mnt,/proc/self/root,' . $base . '/ns/mnt,' . $base . '/root',
+                $namespaceEvidence['evidence'],
+            );
             $provenance = $integrityResult['provenance'];
             foreach ($integrityResult['sources'] as $integritySource) {
                 $provenance['evidence_source_ids'][] = $this->addSource('file', $integritySource['locator'], $integritySource['content']);
             }
+            $provenance['evidence_source_ids'][] = $namespaceSource;
             $statAfter = $this->readFile($base . '/stat', 8192);
             $identityAfter = $statAfter === null ? null : $this->processIdentity($statAfter);
             $identityStable = $identityBeforeMatches
@@ -965,7 +977,11 @@ final class RuntimeInventoryCollector
                 'apache_php_module_deleted_paths' => $moduleDeletedPaths,
                 'process_start_ticks_since_boot' => $startTicks,
                 'package_provenance' => $provenance,
+                'worker_namespace_verified' => $namespaceEvidence['verified'],
             ];
+            if ($kind === 'apache') {
+                $worker['apache_namespace_verified'] = $namespaceEvidence['verified'];
+            }
             $workers[] = $worker;
             $prefix = 'worker.' . count($workers);
             $this->addFact($prefix . '.id', $worker['id'], $source);
@@ -983,6 +999,10 @@ final class RuntimeInventoryCollector
             $this->addFact($prefix . '.apache_php_modules', $modules, $source);
             $this->addFact($prefix . '.apache_php_module_deleted', $moduleDeleted, $source);
             $this->addFact($prefix . '.apache_php_module_deleted_paths', $moduleDeletedPaths, $source);
+            $this->addFact($prefix . '.namespace_verified', $namespaceEvidence['verified'], $namespaceSource);
+            if ($kind === 'apache') {
+                $this->addFact($prefix . '.apache_namespace_verified', $namespaceEvidence['verified'], $namespaceSource);
+            }
             $this->addFact($prefix . '.start_ticks_since_boot', $startTicks, $source);
             $provenanceSource = $this->addSource('other', $base . ':package-provenance', json_encode($provenance, JSON_THROW_ON_ERROR));
             $this->addFact($prefix . '.package_provenance', $provenance, $provenanceSource);
@@ -1079,7 +1099,7 @@ final class RuntimeInventoryCollector
         if ($this->packageInventoryTruncated) {
             $packageCoverageGap = 'The package inventory exceeded its configured record limit; omitted package subjects remain unknown.';
         } elseif ($this->packageIdentityAmbiguous) {
-            $packageCoverageGap = 'Multiple RPM rows shared package name and version, including architecture-specific rows; ambiguous package subjects were omitted.';
+            $packageCoverageGap = 'Multiple package rows shared the same name, version, and architecture; ambiguous package subjects were omitted.';
         } elseif ($this->packageInventoryIncomplete) {
             $packageCoverageGap = 'One or more package rows had an unverified or transitional status, malformed metadata, or could not be assigned a trusted identity; affected subjects remain unknown.';
         } else {
@@ -1258,6 +1278,7 @@ final class RuntimeInventoryCollector
                 'state' => $state,
                 'files' => array_column($entries, 'file'),
                 'observations' => $observations,
+                'evidence_source_ids' => array_values(array_unique(array_column($entries, 'source_id'))),
             ];
             $evidence = json_encode($result[$name], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
             $sourceId = $this->addSource('other', 'configuration:' . $name, $evidence);
@@ -1291,6 +1312,7 @@ final class RuntimeInventoryCollector
                     'state' => $state,
                     'files' => array_column($entries, 'file'),
                     'observations' => $observations,
+                    'evidence_source_ids' => array_values(array_unique(array_column($entries, 'source_id'))),
                 ];
                 $evidence = json_encode($bySapi[$sapi][$name], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
                 $sourceId = $this->addSource('other', 'configuration:' . $sapi . ':' . $name, $evidence);
@@ -1780,15 +1802,15 @@ final class RuntimeInventoryCollector
     }
 
     /**
-     * Package checksums for an Apache module are meaningful only when the worker resolves the
-     * mapped path in the collector's mount namespace and process root.
+     * Configuration and package paths are attributable only when the worker and collector resolve
+     * paths from the same mount namespace and process root.
      *
      * @return array{verified: bool, evidence: string}
      */
-    private function apacheWorkerNamespaceEvidence(string $base): array
+    private function workerNamespaceEvidence(string $base): array
     {
-        $collectorMountNamespace = @readlink($this->path('/proc/self/ns/mnt'));
-        $workerMountNamespace = @readlink($this->path($base . '/ns/mnt'));
+        $collectorMountNamespace = $this->mountNamespaceIdentity('/proc/self/ns/mnt');
+        $workerMountNamespace = $this->mountNamespaceIdentity($base . '/ns/mnt');
         $mountNamespaceMatches = is_string($collectorMountNamespace)
             && preg_match('/\Amnt:\[[0-9]+\]\z/', $collectorMountNamespace) === 1
             && $workerMountNamespace === $collectorMountNamespace;
@@ -1804,6 +1826,15 @@ final class RuntimeInventoryCollector
         $rootMatches = $collectorRootIdentity !== null
             && $workerRootIdentity !== null
             && $collectorRootIdentity === $workerRootIdentity;
+        if (!$rootMatches && $this->processRunner instanceof FixtureProcessRunner) {
+            $collectorFixtureRoot = $this->fixtureRootIdentity('/proc/self/root');
+            $workerFixtureRoot = $this->fixtureRootIdentity($base . '/root');
+            if ($collectorFixtureRoot !== null && $collectorFixtureRoot === $workerFixtureRoot) {
+                $rootMatches = true;
+                $collectorRootIdentity = ['fixture_identity' => $collectorFixtureRoot];
+                $workerRootIdentity = ['fixture_identity' => $workerFixtureRoot];
+            }
+        }
 
         return [
             'verified' => $mountNamespaceMatches && $rootMatches,
@@ -1814,6 +1845,35 @@ final class RuntimeInventoryCollector
                 'worker_root' => $workerRootIdentity,
             ], JSON_THROW_ON_ERROR),
         ];
+    }
+
+    private function mountNamespaceIdentity(string $path): ?string
+    {
+        $absolutePath = $this->path($path);
+        if ($this->processRunner instanceof FixtureProcessRunner && !is_link($absolutePath) && is_file($absolutePath)) {
+            $identity = $this->readFile($path, 64);
+        } else {
+            $identity = @readlink($absolutePath);
+        }
+        if (!is_string($identity) || preg_match('/\Amnt:\[[0-9]+\]\z/', trim($identity)) !== 1) {
+            return null;
+        }
+
+        return trim($identity);
+    }
+
+    private function fixtureRootIdentity(string $path): ?string
+    {
+        $absolutePath = $this->path($path);
+        if (is_link($absolutePath) || !is_file($absolutePath)) {
+            return null;
+        }
+        $identity = $this->readFile($path, 96);
+        if ($identity === null || preg_match('/\\Afixture-root:[a-zA-Z0-9._-]{1,64}\\z/', trim($identity)) !== 1) {
+            return null;
+        }
+
+        return trim($identity);
     }
 
     /**
@@ -2008,6 +2068,19 @@ final class RuntimeInventoryCollector
         }
 
         return $value;
+    }
+
+    private static function safePackageArchitecture(string $value, bool $dpkg): ?string
+    {
+        $architecture = self::safeToken($value, 32);
+        if ($architecture === null) {
+            return null;
+        }
+        $pattern = $dpkg
+            ? '/\A[a-z0-9][a-z0-9-]{0,31}\z/i'
+            : '/\A[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,31}\z/';
+
+        return preg_match($pattern, $architecture) === 1 ? $architecture : null;
     }
 
     private static function safePhpVersion(string $value): ?string

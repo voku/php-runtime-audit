@@ -16,7 +16,7 @@ use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
  * @phpstan-import-type VendorRule from AdvisoryCatalog
  * @phpstan-import-type RuntimeFact from RuntimeInventoryCollector
  * @phpstan-import-type RuntimeConfigSetting from RuntimeInventoryCollector
- * @phpstan-type RuntimeTarget array{id: string, subject_id: string, kind: string, runtime_path: string|null, runtime_path_fact_id: string|null, parent_pid: int|null, process_start_ticks_since_boot: int|null, fpm_configuration_path: string|null, fpm_configuration_state: 'default'|'observed'|'pool'|'unavailable', fpm_pool_name: string|null, version: string|null, package: string|null, package_version: string|null, source_fact_id: string|null, package_fact_id: string|null, deleted: bool|null, provenance_verified: bool, provenance_fact_id: string|null}
+ * @phpstan-type RuntimeTarget array{id: string, subject_id: string, kind: string, runtime_path: string|null, runtime_path_fact_id: string|null, parent_pid: int|null, process_start_ticks_since_boot: int|null, fpm_configuration_path: string|null, fpm_configuration_state: 'default'|'observed'|'pool'|'unavailable', fpm_pool_name: string|null, version: string|null, package: string|null, package_version: string|null, source_fact_id: string|null, package_fact_id: string|null, package_identity_fact_ids?: list<string>, deleted: bool|null, provenance_verified: bool, provenance_fact_id: string|null, worker_namespace_verified?: bool, apache_namespace_verified?: bool}
  * @phpstan-type AdvisorySource array{source_id: string, kind: 'vendor_advisory'|'other', locator: string, captured_at: string, captured_digest: string|null, current_digest: null, freshness: 'unknown'}
  * @phpstan-type AdvisoryFact array{fact_id: string, key: string, value: mixed, source_id: string}
  * @phpstan-type AdvisoryAssessment array{record_type: 'assessment', schema_version: '1.0', record_id: string, subject_id: string, assessed_at: string, verdict: string, patch_status: string, patch_evidence_ids: list<string>, compromise_evidence: array{status: 'unknown', evidence_ids: list<string>}, rationale: string}
@@ -36,10 +36,10 @@ final class AdvisoryEvaluator
         $observedAt = $inventory['observed_at'];
         /** @var list<AdvisoryDefinition> $advisories */
         $advisories = $catalog->advisories;
-        $targets = $this->runtimeTargets($inventory, $advisories);
-        $observedTargetCount = count($targets);
+        $targetSelection = $this->runtimeTargets($inventory, $advisories);
+        $targets = $targetSelection['targets'];
+        $observedTargetCount = $targetSelection['observed_count'];
         $omittedTargetCount = max(0, $observedTargetCount - self::MAX_TARGETS);
-        $targets = array_slice($targets, 0, self::MAX_TARGETS);
         /** @var list<RuntimeTarget> $targets */
         $targets = $targets;
         if ($targets === []) {
@@ -147,7 +147,7 @@ final class AdvisoryEvaluator
                     $this->factId($inventory['facts'], 'packages.state'),
                 ], static fn(?string $id): bool => $id !== null));
                 $basis = $this->assess($advisory, $inventory, $target, $rule);
-                $configurationFactIds = $this->configurationFactIdsForTarget($advisory['cve'], $inventory, $target);
+                $configurationFactIds = $this->configurationFactIdsForTarget($advisory['cve'], $inventory, $target, $facts);
                 $basisFact = $this->addFact(
                     $facts,
                     'advisory.' . $advisory['cve'] . '.' . $targetId . '.assessment_basis',
@@ -174,6 +174,7 @@ final class AdvisoryEvaluator
                     $target['source_fact_id'],
                     $target['runtime_path_fact_id'],
                     $target['package_fact_id'],
+                    ...($target['package_identity_fact_ids'] ?? []),
                     $target['provenance_fact_id'],
                     ...$vendorEvidenceIds,
                     $catalogFactId,
@@ -209,16 +210,22 @@ final class AdvisoryEvaluator
     /**
      * @phpstan-param RuntimeInventory $inventory
      * @phpstan-param list<AdvisoryDefinition> $advisories
-     * @phpstan-return list<RuntimeTarget>
+     * @phpstan-return array{targets: list<RuntimeTarget>, observed_count: int}
      */
     private function runtimeTargets(array $inventory, array $advisories): array
     {
         $packages = $inventory['packages'];
         $facts = $inventory['facts'];
         $targets = [];
+        $observedTargetCount = 0;
         foreach ($inventory['workers'] as $index => $worker) {
             $workerIndex = $index + 1;
             if ($worker['kind'] === 'fpm') {
+                ++$observedTargetCount;
+                if ($observedTargetCount > self::MAX_TARGETS) {
+                    continue;
+                }
+
                 $executablePath = $worker['executable_path'];
                 $runtimePathFactId = $this->factId($facts, 'worker.' . $workerIndex . '.executable_path');
                 $version = $worker['version'];
@@ -247,7 +254,9 @@ final class AdvisoryEvaluator
                         }
                     }
                 }
-                $packageName = $this->fpmPackageName($executablePath, $inventory['distribution'] ?? '');
+                $packageName = $worker['worker_namespace_verified']
+                    ? $this->fpmPackageName($executablePath, $inventory['distribution'] ?? '')
+                    : null;
                 $package = $this->findPackage($packages, $packageName);
                 if ($package === null && is_string($executablePath) && str_starts_with($executablePath, '/usr/local/')) {
                     $packageName = null;
@@ -274,6 +283,7 @@ final class AdvisoryEvaluator
                     'source_fact_id' => $sourceFactId,
                     'package_fact_id' => $package['fact_id'] ?? null,
                     'deleted' => $worker['executable_deleted'],
+                    'worker_namespace_verified' => $worker['worker_namespace_verified'],
                 ];
                 continue;
             }
@@ -281,16 +291,23 @@ final class AdvisoryEvaluator
                 continue;
             }
             foreach ($worker['apache_php_modules'] as $moduleIndex => $modulePath) {
+                ++$observedTargetCount;
+                if ($observedTargetCount > self::MAX_TARGETS) {
+                    continue;
+                }
+
+                $namespaceVerified = $worker['apache_namespace_verified'] ?? false;
                 // The loaded module's filename does not reliably encode its version (modern
                 // builds ship an unversioned libphp.so); dpkg-confirmed provenance of the exact
                 // loaded path is authoritative when available, with the filename guess as a
-                // fallback for hosts without local package-database confirmation.
-                $moduleProvenance = $worker['package_provenance']['verified']
+                // fallback only when the worker's mount namespace and process root are verified.
+                $moduleProvenance = $namespaceVerified
+                    && $worker['package_provenance']['verified']
                     && $worker['package_provenance']['executable_path'] === $modulePath;
                 $moduleName = basename($modulePath);
                 $packageName = $moduleProvenance
                     ? $worker['package_provenance']['package_name']
-                    : (preg_match('/\Alibphp([0-9]+\.[0-9]+)\.so\z/', $moduleName, $matches) === 1
+                    : ($namespaceVerified && preg_match('/\Alibphp([0-9]+\.[0-9]+)\.so\z/', $moduleName, $matches) === 1
                         ? 'libapache2-mod-php' . $matches[1]
                         : null);
                 $package = $this->findPackage($packages, $packageName);
@@ -319,6 +336,8 @@ final class AdvisoryEvaluator
                     'deleted' => $worker['apache_php_module_deleted_paths'] === null
                         ? null
                         : in_array($modulePath, $worker['apache_php_module_deleted_paths'], true),
+                    'apache_namespace_verified' => $worker['apache_namespace_verified'] ?? false,
+                    'worker_namespace_verified' => $worker['worker_namespace_verified'],
                 ];
             }
         }
@@ -326,6 +345,11 @@ final class AdvisoryEvaluator
         /** @var list<array{id: string, binary_path: string, version: string|null}> $fpmExecutables */
         $fpmExecutables = $inventory['fpm_executables'] ?? [];
         foreach ($fpmExecutables as $index => $executable) {
+            ++$observedTargetCount;
+            if ($observedTargetCount > self::MAX_TARGETS) {
+                continue;
+            }
+
             $packageName = $this->fpmPackageName($executable['binary_path'], $inventory['distribution'] ?? '');
             $package = $this->findPackage($packages, $packageName);
             $targets[] = [
@@ -358,6 +382,11 @@ final class AdvisoryEvaluator
                 || !is_string($runtime['version'] ?? null)) {
                 continue;
             }
+            ++$observedTargetCount;
+            if ($observedTargetCount > self::MAX_TARGETS) {
+                continue;
+            }
+
             $packageName = $this->cliPackageName($runtime['binary_path'], $inventory['distribution'] ?? '');
             $package = $this->findPackage($packages, $packageName);
             $targets[] = [
@@ -381,8 +410,20 @@ final class AdvisoryEvaluator
             if (!$this->isRuntimePackageName($package['name'], $advisories)) {
                 continue;
             }
-            $packageId = 'package-' . substr(hash('sha256', $package['name'] . "\0" . $package['version']), 0, 20);
+            ++$observedTargetCount;
+            if ($observedTargetCount > self::MAX_TARGETS) {
+                continue;
+            }
+
+            $architecture = $package['architecture'] ?? null;
+            $packageIdentity = $package['name'] . "\0" . $package['version']
+                . (is_string($architecture) ? "\0" . $architecture : '');
+            $packageId = 'package-' . substr(hash('sha256', $packageIdentity), 0, 20);
             $packageFactId = $this->factId($facts, 'package.' . $index . '.version');
+            $packageIdentityFactIds = array_values(array_filter([
+                $this->factId($facts, 'package.' . $index . '.name'),
+                $this->factId($facts, 'package.' . $index . '.architecture'),
+            ], static fn(?string $factId): bool => $factId !== null));
             $targets[] = [
                 'id' => $packageId, 'subject_id' => $packageId, 'kind' => 'package',
                 'runtime_path' => null,
@@ -394,16 +435,18 @@ final class AdvisoryEvaluator
                 'fpm_pool_name' => null,
                 'version' => $this->upstreamVersion($package['version']), 'package' => $package['name'],
                 'package_version' => $package['version'], 'source_fact_id' => $packageFactId,
-                'package_fact_id' => $packageFactId, 'deleted' => false,
+                'package_fact_id' => $packageFactId,
+                'package_identity_fact_ids' => $packageIdentityFactIds,
+                'deleted' => false,
                 'provenance_verified' => $inventory['package_inventory_state'] === 'attempted' && $packageFactId !== null,
                 'provenance_fact_id' => $packageFactId,
             ];
         }
 
-        return $targets;
+        return ['targets' => $targets, 'observed_count' => $observedTargetCount];
     }
 
-    /** @param list<array{name: string, version: string}> $packages
+    /** @param list<array{name: string, version: string, architecture?: string|null}> $packages
      * @return array{version: string, fact_id: string}|null
      */
     private function findPackage(array $packages, ?string $name): ?array
@@ -411,16 +454,17 @@ final class AdvisoryEvaluator
         if ($name === null) {
             return null;
         }
-        $matches = [];
+        $match = null;
         foreach ($packages as $index => $package) {
             if ($package['name'] === $name) {
-                $matches[$package['version']][] = ['version' => $package['version'], 'fact_id' => 'fact.package.' . $index . '.version'];
+                if ($match !== null) {
+                    return null;
+                }
+                $match = ['version' => $package['version'], 'fact_id' => 'fact.package.' . $index . '.version'];
             }
         }
-        if (count($matches) !== 1) {
-            return null;
-        }
-        return array_values($matches)[0][0];
+
+        return $match;
     }
 
     private function cliPackageName(string $path, string $distribution): ?string
@@ -529,6 +573,9 @@ final class AdvisoryEvaluator
     private function configurationRootForTarget(array $target, array $inventory): ?string
     {
         if ($target['kind'] === 'fpm') {
+            if (!($target['worker_namespace_verified'] ?? false)) {
+                return null;
+            }
             $expectedRoot = $this->defaultFpmConfigurationRoot($target, $inventory);
             if ($expectedRoot === null) {
                 return null;
@@ -539,6 +586,9 @@ final class AdvisoryEvaluator
             if ($configurationState === 'pool') {
                 $parent = $this->fpmConfigurationParent($target, $inventory);
                 if ($parent === null) {
+                    return null;
+                }
+                if (!$parent['worker_namespace_verified']) {
                     return null;
                 }
                 $configurationPath = $parent['fpm_configuration_path'];
@@ -555,6 +605,7 @@ final class AdvisoryEvaluator
         }
 
         if ($target['kind'] === 'apache-mod-php'
+            && ($target['apache_namespace_verified'] ?? false)
             && in_array($inventory['distribution'] ?? null, ['debian', 'ubuntu'], true)
             && $target['runtime_path'] !== null) {
             if (preg_match('~\A/usr/lib/apache2/modules/libphp([0-9]+\.[0-9]+)\.so\z~', $target['runtime_path'], $matches) === 1) {
@@ -621,6 +672,7 @@ final class AdvisoryEvaluator
     {
         if ($worker['parent_pid'] === null
             || $worker['process_start_ticks_since_boot'] === null
+            || !$worker['worker_namespace_verified']
             || $worker['fpm_configuration_state'] !== 'pool'
             || $worker['fpm_pool_name'] === null) {
             return null;
@@ -631,6 +683,7 @@ final class AdvisoryEvaluator
                 || $candidate['pid'] !== $worker['parent_pid']
                 || $candidate['process_start_ticks_since_boot'] === null
                 || $candidate['process_start_ticks_since_boot'] >= $worker['process_start_ticks_since_boot']
+                || !$candidate['worker_namespace_verified']
                 || $candidate['executable_path'] === null
                 || $candidate['executable_deleted'] !== false
                 || $candidate['fpm_pool_name'] !== null
@@ -681,9 +734,10 @@ final class AdvisoryEvaluator
     /**
      * @phpstan-param RuntimeInventory $inventory
      * @phpstan-param RuntimeTarget $target
+     * @phpstan-param list<AdvisoryFact> $facts
      * @return list<string>
      */
-    private function configurationFactIdsForTarget(string $cve, array $inventory, array $target): array
+    private function configurationFactIdsForTarget(string $cve, array $inventory, array $target, array &$facts): array
     {
         if ($cve !== 'CVE-2026-115560') {
             return [];
@@ -707,9 +761,15 @@ final class AdvisoryEvaluator
             if ($setting['observations'] === []) {
                 continue;
             }
-            $factId = $this->factId($inventory['facts'], 'configuration.' . $sapi . '.' . $settingName);
-            if ($factId !== null) {
-                $factIds[] = $factId;
+            $sourceId = $this->factSourceId($inventory['facts'], 'configuration.' . $sapi . '.' . $settingName);
+            if ($sourceId !== null) {
+                $targetKey = substr(hash('sha256', $target['id']), 0, 16);
+                $factIds[] = $this->addFact(
+                    $facts,
+                    'configuration.target.' . $targetKey . '.' . $sapi . '.' . $settingName,
+                    $setting,
+                    $sourceId,
+                );
             }
         }
 
@@ -1136,6 +1196,18 @@ final class AdvisoryEvaluator
         foreach ($facts as $fact) {
             if ($fact['key'] === $key) {
                 return $fact['fact_id'];
+            }
+        }
+
+        return null;
+    }
+
+    /** @phpstan-param list<RuntimeFact> $facts */
+    private function factSourceId(array $facts, string $key): ?string
+    {
+        foreach ($facts as $fact) {
+            if ($fact['key'] === $key) {
+                return $fact['source_id'];
             }
         }
 

@@ -38,7 +38,7 @@ final class NativeDpkgQueryTest extends TestCase
             fclose($pipes[2]);
             $exit = proc_close($process);
             self::assertSame(0, $exit, is_string($stderr) ? $stderr : 'Native dpkg query failed.');
-            self::assertSame($name . "\t8.2.35-1~deb12u1\tinstall ok installed\n", $stdout);
+            self::assertSame($name . "\t8.2.35-1~deb12u1\tinstall ok installed\tamd64\n", $stdout);
         } finally {
             unlink($database . '/status');
             rmdir($database);

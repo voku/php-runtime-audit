@@ -2,7 +2,7 @@
   "commands": {
     "dpkg-packages": {
       "exit_code": 0,
-      "stdout": "libapache2-mod-php8.2\t8.2.35-1~deb12u1\tinstall ok installed\n"
+      "stdout": "libapache2-mod-php8.2\t8.2.35-1~deb12u1\tinstall ok installed\tamd64\n"
     }
   }
 }

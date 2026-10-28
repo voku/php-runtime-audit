@@ -100,15 +100,31 @@ final readonly class SubjectIdentity
                 || !is_string($nameFact['value'] ?? null) || !is_string($versionFact['value'] ?? null)) {
                 continue;
             }
-            $candidateId = 'package-' . substr(hash('sha256', $nameFact['value'] . "\0" . $versionFact['value']), 0, 20);
+            $architectureFact = $byKey['package.' . $index . '.architecture'] ?? null;
+            $architecture = is_array($architectureFact) && is_string($architectureFact['value'] ?? null)
+                ? $architectureFact['value']
+                : null;
+            $identity = $nameFact['value'] . "\0" . $versionFact['value']
+                . ($architecture !== null ? "\0" . $architecture : '');
+            $candidateId = 'package-' . substr(hash('sha256', $identity), 0, 20);
             if ($candidateId !== $subjectId) {
                 continue;
             }
 
+            $evidenceIds = [$nameFact['fact_id'], $versionFact['fact_id']];
+            if (is_array($architectureFact)) {
+                $evidenceIds[] = $architectureFact['fact_id'];
+            }
+
             return new self(
                 'package',
-                SafeText::plain(sprintf('Installed package %s %s', $nameFact['value'], $versionFact['value'])),
-                [$nameFact['fact_id'], $versionFact['fact_id']],
+                SafeText::plain(sprintf(
+                    'Installed package %s %s%s',
+                    $nameFact['value'],
+                    $versionFact['value'],
+                    $architecture !== null ? ' (' . $architecture . ')' : '',
+                )),
+                $evidenceIds,
             );
         }
 

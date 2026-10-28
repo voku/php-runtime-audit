@@ -148,9 +148,9 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertIsString($packageSourceId);
 
         foreach ([
-            ['name' => 'php-common', 'version' => '8.3.36-1.el10_2'],
-            ['name' => 'php8.4', 'version' => '8.4.27-1.el10_2'],
-            ['name' => 'php8.4-common', 'version' => '8.4.27-1.el10_2'],
+            ['name' => 'php-common', 'version' => '8.3.36-1.el10_2', 'architecture' => 'x86_64'],
+            ['name' => 'php8.4', 'version' => '8.4.27-1.el10_2', 'architecture' => 'x86_64'],
+            ['name' => 'php8.4-common', 'version' => '8.4.27-1.el10_2', 'architecture' => 'x86_64'],
         ] as $package) {
             $index = count($inventory['packages']);
             $inventory['packages'][] = $package;
@@ -158,6 +158,12 @@ final class AdvisoryEvaluatorTest extends TestCase
                 'fact_id' => 'fact.package.' . $index . '.version',
                 'key' => 'package.' . $index . '.version',
                 'value' => $package['version'],
+                'source_id' => $packageSourceId,
+            ];
+            $inventory['facts'][] = [
+                'fact_id' => 'fact.package.' . $index . '.architecture',
+                'key' => 'package.' . $index . '.architecture',
+                'value' => $package['architecture'],
                 'source_id' => $packageSourceId,
             ];
         }
@@ -169,13 +175,78 @@ final class AdvisoryEvaluatorTest extends TestCase
         }
 
         foreach ([
-            ['name' => 'php', 'version' => '8.3.36-1.el10_2'],
-            ['name' => 'php-common', 'version' => '8.3.36-1.el10_2'],
-            ['name' => 'php8.4', 'version' => '8.4.27-1.el10_2'],
-            ['name' => 'php8.4-common', 'version' => '8.4.27-1.el10_2'],
+            ['name' => 'php', 'version' => '8.3.36-1.el10_2', 'architecture' => 'x86_64'],
+            ['name' => 'php-common', 'version' => '8.3.36-1.el10_2', 'architecture' => 'x86_64'],
+            ['name' => 'php8.4', 'version' => '8.4.27-1.el10_2', 'architecture' => 'x86_64'],
+            ['name' => 'php8.4-common', 'version' => '8.4.27-1.el10_2', 'architecture' => 'x86_64'],
         ] as $package) {
-            $subjectId = 'package-' . substr(hash('sha256', $package['name'] . "\0" . $package['version']), 0, 20);
+            $subjectId = 'package-' . substr(hash(
+                'sha256',
+                $package['name'] . "\0" . $package['version'] . "\0" . $package['architecture'],
+            ), 0, 20);
             self::assertArrayHasKey($subjectId, $assessmentsBySubject, $package['name'] . ' gets a package assessment subject.');
+        }
+    }
+
+    public function test_dpkg_multiarch_packages_keep_distinct_assessment_subjects(): void
+    {
+        $fixtureRoot = dirname(__DIR__) . '/fixtures/runtime/debian-fpm';
+        $temporaryRoot = sys_get_temp_dir() . '/pra-dpkg-multiarch-' . bin2hex(random_bytes(8));
+        $this->copyDirectory($fixtureRoot, $temporaryRoot);
+        $commandsPath = $temporaryRoot . '/commands.json';
+        $commandsJson = file_get_contents($commandsPath);
+        self::assertIsString($commandsJson);
+        $commands = json_decode($commandsJson, true, 32, JSON_THROW_ON_ERROR);
+        if (!is_array($commands)
+            || !is_array($commands['commands'] ?? null)
+            || !is_array($commands['commands']['dpkg-packages'] ?? null)
+            || !is_string($commands['commands']['dpkg-packages']['stdout'] ?? null)) {
+            self::fail('Fixture package query data is malformed.');
+        }
+        $commands['commands']['dpkg-packages']['stdout']
+            = "php8.2-cli\t8.2.35-1~deb12u1\tinstall ok installed\tamd64\n"
+            . "php8.2-cli\t8.2.35-1~deb12u1\tinstall ok installed\ti386\n"
+            . "php8.2-fpm\t8.2.35-1~deb12u1\tinstall ok installed\tamd64\n";
+        file_put_contents($commandsPath, json_encode($commands, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR) . "\n");
+        $statusPath = $temporaryRoot . '/var/lib/dpkg/status';
+        $status = file_get_contents($statusPath);
+        self::assertIsString($status);
+        file_put_contents(
+            $statusPath,
+            $status . "\nPackage: php8.2-cli\nStatus: install ok installed\nArchitecture: i386\nVersion: 8.2.35-1~deb12u1\n",
+        );
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($temporaryRoot),
+                $temporaryRoot,
+                '2026-10-25T00:00:00Z',
+            ))->collect();
+            self::assertSame('attempted', $inventory['package_inventory_state']);
+            self::assertSame('amd64', $inventory['packages'][0]['architecture'] ?? null);
+            self::assertSame('i386', $inventory['packages'][1]['architecture'] ?? null);
+
+            [, $evaluation] = $this->evaluateInventory($inventory);
+            $subjectIds = array_values(array_unique(array_column($evaluation['assessments'], 'subject_id')));
+            $amd64Id = 'package-' . substr(hash(
+                'sha256',
+                "php8.2-cli\0" . '8.2.35-1~deb12u1' . "\0" . 'amd64',
+            ), 0, 20);
+            $i386Id = 'package-' . substr(hash(
+                'sha256',
+                "php8.2-cli\0" . '8.2.35-1~deb12u1' . "\0" . 'i386',
+            ), 0, 20);
+            self::assertContains($amd64Id, $subjectIds);
+            self::assertContains($i386Id, $subjectIds);
+            self::assertNotSame($amd64Id, $i386Id);
+
+            $amd64Assessment = $this->assessmentForSubject($evaluation, 'CVE-2026-109618', $amd64Id);
+            self::assertIsArray($amd64Assessment);
+            self::assertContains('fact.package.0.name', $amd64Assessment['patch_evidence_ids']);
+            self::assertContains('fact.package.0.version', $amd64Assessment['patch_evidence_ids']);
+            self::assertContains('fact.package.0.architecture', $amd64Assessment['patch_evidence_ids']);
+        } finally {
+            $this->removeDirectory($temporaryRoot);
         }
     }
 
@@ -251,8 +322,8 @@ final class AdvisoryEvaluatorTest extends TestCase
                 $assessmentsBySubject[$assessment['subject_id']] = $assessment;
             }
         }
-        $cliPackageId = 'package-' . substr(hash('sha256', "php8.2-cli\0" . '8.2.34-1~deb12u1'), 0, 20);
-        $fpmPackageId = 'package-' . substr(hash('sha256', "php8.2-fpm\0" . '8.2.34-1~deb12u1'), 0, 20);
+        $cliPackageId = 'package-' . substr(hash('sha256', "php8.2-cli\0" . '8.2.34-1~deb12u1' . "\0" . 'amd64'), 0, 20);
+        $fpmPackageId = 'package-' . substr(hash('sha256', "php8.2-fpm\0" . '8.2.34-1~deb12u1' . "\0" . 'amd64'), 0, 20);
 
         self::assertSame('unknown', $assessmentsBySubject[$cliId]['patch_status']);
         self::assertSame('unknown', $assessmentsBySubject[$fpmExecutableId]['patch_status']);
@@ -368,6 +439,41 @@ final class AdvisoryEvaluatorTest extends TestCase
         }
     }
 
+    public function test_apache_module_target_limit_caps_expansion_and_counts_omitted_targets(): void
+    {
+        $inventory = $this->collectInventory('synthetic-debian-apache-integrity');
+        $modulePaths = [];
+        for ($moduleIndex = 0; $moduleIndex < 200; ++$moduleIndex) {
+            $modulePaths[] = '/usr/lib/apache2/modules/libphp8.2-' . $moduleIndex . '.so';
+        }
+        $inventory['workers'][0]['apache_php_modules'] = $modulePaths;
+        foreach ($inventory['facts'] as &$fact) {
+            if ($fact['key'] === 'worker.1.apache_php_modules') {
+                $fact['value'] = $modulePaths;
+            }
+        }
+        unset($fact);
+
+        [, $evaluation] = $this->evaluateInventory($inventory);
+        $selectionFacts = array_values(array_filter(
+            $evaluation['facts'],
+            static fn(array $fact): bool => $fact['key'] === 'advisory.assessment_targets.truncated',
+        ));
+
+        self::assertNotEmpty($selectionFacts);
+        foreach ($selectionFacts as $selectionFact) {
+            self::assertIsArray($selectionFact['value']);
+            self::assertSame(128, $selectionFact['value']['limit']);
+            self::assertSame(128, $selectionFact['value']['included']);
+            self::assertSame(201, $selectionFact['value']['observed']);
+            self::assertSame(73, $selectionFact['value']['omitted']);
+        }
+
+        $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+        self::assertGreaterThanOrEqual(128, $report['summary']['assessment_count']);
+        self::assertGreaterThan(0, $report['summary']['coverage_count']);
+    }
+
     public function test_report_supports_the_catalog_and_runtime_assessment_limits_together(): void
     {
         $catalogJson = file_get_contents(AdvisoryCatalog::defaultPath());
@@ -447,7 +553,7 @@ final class AdvisoryEvaluatorTest extends TestCase
     {
         [, $evaluation] = $this->evaluate('debian-fpm-vulnerable');
         $assessment = $this->assessmentMap($evaluation);
-        $fpmPackageId = 'package-' . substr(hash('sha256', "php8.2-fpm\0" . '8.2.34-1~deb12u1'), 0, 20);
+        $fpmPackageId = 'package-' . substr(hash('sha256', "php8.2-fpm\0" . '8.2.34-1~deb12u1' . "\0" . 'amd64'), 0, 20);
         $fpmPackageAssessment = null;
         foreach ($evaluation['assessments'] as $candidateAssessment) {
             if ($candidateAssessment['subject_id'] === $fpmPackageId
@@ -761,6 +867,94 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertSame('unknown', $assessments[0]['patch_status']);
     }
 
+    public function test_versioned_apache_module_with_unverified_worker_namespace_does_not_inherit_host_configuration(): void
+    {
+        $inventory = $this->collectInventoryWithApacheNamespaceMismatch();
+        $modulePath = '/usr/lib/apache2/modules/libphp8.2.so';
+        self::assertFalse($inventory['workers'][0]['apache_namespace_verified'] ?? true);
+        $apacheUploadSetting = $inventory['configuration_by_sapi']['apache2']['session.upload_progress.enabled'];
+        self::assertIsArray($apacheUploadSetting);
+        $apacheUploadObservations = $apacheUploadSetting['observations'] ?? null;
+        self::assertIsArray($apacheUploadObservations);
+        self::assertNotEmpty($apacheUploadObservations);
+
+        $inventory['workers'][0]['apache_php_modules'] = [$modulePath];
+        foreach ($inventory['facts'] as &$fact) {
+            if (!is_array($fact) || ($fact['key'] ?? null) !== 'worker.1.apache_php_modules') {
+                continue;
+            }
+            $fact['value'] = [$modulePath];
+        }
+        unset($fact);
+
+        [, $evaluation] = $this->evaluateInventory($inventory);
+        $apacheAssessments = array_values(array_filter(
+            $evaluation['assessments'],
+            static fn(array $assessment): bool => str_starts_with(
+                $assessment['record_id'],
+                'assessment:CVE-2026-115560:apache-',
+            ),
+        ));
+
+        self::assertCount(1, $apacheAssessments);
+        self::assertSame('unknown', $apacheAssessments[0]['verdict']);
+        self::assertSame('unknown', $apacheAssessments[0]['patch_status']);
+        self::assertStringContainsString('Package provenance: unknown.', $apacheAssessments[0]['rationale']);
+        self::assertStringNotContainsString('Package: libapache2-mod-php8.2 ', $apacheAssessments[0]['rationale']);
+        $subjectId = $apacheAssessments[0]['subject_id'];
+        $facts = $this->factMap($evaluation);
+        $basis = $facts['advisory.CVE-2026-115560.' . $subjectId . '.assessment_basis'];
+        self::assertIsArray($basis);
+        self::assertSame([], $basis['configuration_fact_ids']);
+    }
+
+    public function test_fpm_configuration_is_not_attributed_when_worker_root_differs(): void
+    {
+        $inventory = $this->collectInventoryWithFpmNamespaceMismatch();
+        $worker = $inventory['workers'][0];
+        self::assertFalse($worker['worker_namespace_verified']);
+        self::assertNull($worker['version']);
+
+        [, $evaluation] = $this->evaluateInventory($inventory);
+        $assessment = $this->assessmentForSubject($evaluation, 'CVE-2026-115560', $worker['id']);
+        self::assertIsArray($assessment);
+        self::assertNotSame('verified_fixed', $assessment['patch_status']);
+        self::assertStringContainsString('Runtime version: unknown.', $assessment['rationale']);
+        self::assertStringContainsString('Package provenance: unknown.', $assessment['rationale']);
+        self::assertFalse($worker['package_provenance']['verified']);
+
+        $facts = $this->factMap($evaluation);
+        $basis = $facts['advisory.CVE-2026-115560.' . $worker['id'] . '.assessment_basis'];
+        self::assertIsArray($basis);
+        self::assertSame([], $basis['configuration_fact_ids']);
+    }
+
+    public function test_fpm_pool_worker_does_not_inherit_runtime_or_package_from_unverified_parent_namespace(): void
+    {
+        $inventory = $this->collectInventoryWithFpmPoolNamespaceMismatch();
+        $poolWorker = $this->fpmPoolWorker($inventory, 'www');
+
+        self::assertFalse($poolWorker['worker_namespace_verified']);
+        self::assertNull($poolWorker['version']);
+        $masterPid = $poolWorker['parent_pid'];
+        self::assertIsInt($masterPid);
+        $masterWorker = null;
+        foreach ($inventory['workers'] as $worker) {
+            if ($worker['pid'] === $masterPid) {
+                $masterWorker = $worker;
+                break;
+            }
+        }
+        self::assertIsArray($masterWorker);
+        self::assertSame('8.3.36', $masterWorker['version']);
+
+        [, $evaluation] = $this->evaluateInventory($inventory);
+        $assessment = $this->assessmentForSubject($evaluation, 'CVE-2026-115560', $poolWorker['id']);
+        self::assertIsArray($assessment);
+        self::assertStringContainsString('Runtime version: unknown.', $assessment['rationale']);
+        self::assertStringContainsString('Package provenance: unknown.', $assessment['rationale']);
+    }
+
     public function test_non_debian_apache_module_layout_does_not_inherit_debian_configuration_root(): void
     {
         $modulePath = '/usr/lib/apache2/modules/libphp8.3.so';
@@ -889,20 +1083,37 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertNotEmpty($report['records']);
 
         $facts = $this->factMap($evaluation);
+        $factsById = [];
+        foreach ($evaluation['facts'] as $fact) {
+            $factsById[$fact['fact_id']] = $fact;
+        }
         $localBasis = $facts['advisory.CVE-2026-115560.' . $localSubjectId . '.assessment_basis'];
         $systemBasis = $facts['advisory.CVE-2026-115560.worker-124-12345.assessment_basis'];
         self::assertIsArray($localBasis);
         self::assertIsArray($systemBasis);
-        $configurationFactIds = [
-            'fact.configuration.fpm.session.upload_progress.enabled',
-            'fact.configuration.fpm.session.serialize_handler',
-        ];
+        $configurationFactIds = $localBasis['configuration_fact_ids'];
+        self::assertIsArray($configurationFactIds);
+        self::assertCount(2, $configurationFactIds);
         self::assertSame('fact.worker.2.executable_path', $localBasis['runtime_path_fact_id']);
-        self::assertSame($configurationFactIds, $localBasis['configuration_fact_ids']);
         self::assertSame([], $systemBasis['configuration_fact_ids']);
-        $inventoryFactIds = array_column($inventory['facts'], 'fact_id');
         foreach ($configurationFactIds as $configurationFactId) {
-            self::assertContains($configurationFactId, $inventoryFactIds);
+            self::assertIsString($configurationFactId);
+            $configurationFact = $factsById[$configurationFactId] ?? null;
+            self::assertIsArray($configurationFact);
+            self::assertStringStartsWith('configuration.target.', $configurationFact['key']);
+            self::assertStringContainsString('.fpm.', $configurationFact['key']);
+            $configurationValue = $configurationFact['value'];
+            if ($configurationValue instanceof \stdClass) {
+                $configurationValue = get_object_vars($configurationValue);
+            }
+            self::assertIsArray($configurationValue);
+            $observations = $configurationValue['observations'] ?? null;
+            self::assertIsArray($observations);
+            self::assertNotEmpty($observations);
+            foreach ($observations as $observation) {
+                self::assertIsArray($observation);
+                self::assertSame('/usr/local/etc', $observation['configuration_root']);
+            }
         }
         self::assertContains(
             '/usr/local/etc/php-fpm.d/zz-security.conf',
@@ -1115,7 +1326,7 @@ final class AdvisoryEvaluatorTest extends TestCase
         }
         self::assertSame([], array_values(array_diff($expectedSourceIds, array_keys($reportSources))));
         $integritySourceIds = $inventory['workers'][0]['package_provenance']['evidence_source_ids'];
-        self::assertCount(4, $integritySourceIds);
+        self::assertCount(5, $integritySourceIds);
         foreach ($integritySourceIds as $sourceId) {
             self::assertArrayHasKey($sourceId, $reportSources);
         }
@@ -1128,6 +1339,7 @@ final class AdvisoryEvaluatorTest extends TestCase
             '/var/lib/dpkg/info/php8.2-fpm.md5sums',
             '/usr/sbin/php-fpm8.2:fingerprint',
             '/proc/123/exe:fingerprint',
+            '/proc/self/ns/mnt,/proc/self/root,/proc/123/ns/mnt,/proc/123/root',
         ] as $locator) {
             self::assertContains($locator, $integritySourceLocators);
         }
@@ -1170,6 +1382,62 @@ final class AdvisoryEvaluatorTest extends TestCase
             $configurationSource['captured_digest'],
             $reportSources[$configurationSource['source_id']]['captured_digest'],
         );
+    }
+
+    public function test_report_retains_raw_configuration_source_for_long_paths(): void
+    {
+        $fixtureRoot = dirname(__DIR__) . '/fixtures/runtime/debian-fpm';
+        $root = sys_get_temp_dir() . '/pra-long-configuration-source-' . bin2hex(random_bytes(8));
+        $this->copyDirectory($fixtureRoot, $root);
+        $segments = array_fill(0, 6, 'nested-' . str_repeat('x', 36));
+        $configurationPath = '/etc/php/8.2/fpm/conf.d/' . implode('/', $segments) . '/deep.ini';
+        self::assertGreaterThan(256, strlen($configurationPath));
+        $absolutePath = $root . $configurationPath;
+        mkdir(dirname($absolutePath), 0777, true);
+        $contents = '; long-path fixture ' . bin2hex(random_bytes(8)) . "\nsession.serialize_handler=php_binary\n";
+        file_put_contents($absolutePath, $contents);
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-25T00:00:00Z',
+            ))->collect();
+            $observations = $inventory['configuration_by_sapi']['fpm']['session.serialize_handler']['observations'];
+            $longPathObserved = false;
+            foreach ($observations as $observation) {
+                if ($observation['file'] === $configurationPath) {
+                    $longPathObserved = true;
+                    break;
+                }
+            }
+            self::assertTrue($longPathObserved);
+            $sourceIds = $inventory['configuration_by_sapi']['fpm']['session.serialize_handler']['evidence_source_ids'] ?? [];
+
+            $rawConfigurationSourceId = null;
+            $rawConfigurationSourceLocator = null;
+            $rawConfigurationSourceDigest = 'sha256:' . hash('sha256', $contents);
+            foreach ($inventory['sources'] as $source) {
+                if (($source['kind'] ?? null) === 'file'
+                    && ($source['captured_digest'] ?? null) === $rawConfigurationSourceDigest) {
+                    $rawConfigurationSourceId = $source['source_id'] ?? null;
+                    $rawConfigurationSourceLocator = $source['locator'] ?? null;
+                    break;
+                }
+            }
+            self::assertIsString($rawConfigurationSourceId);
+            self::assertIsString($rawConfigurationSourceLocator);
+            self::assertContains($rawConfigurationSourceId, $sourceIds);
+            self::assertSame(substr($configurationPath, 0, 256), $rawConfigurationSourceLocator);
+
+            $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
+            $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+            $reportSources = $this->reportSourceMap($report);
+            self::assertArrayHasKey($rawConfigurationSourceId, $reportSources);
+            self::assertSame($rawConfigurationSourceDigest, $reportSources[$rawConfigurationSourceId]['captured_digest']);
+        } finally {
+            $this->removeDirectory($root);
+        }
     }
 
     public function test_remote_citations_do_not_claim_catalog_bytes_were_captured_from_the_network(): void
@@ -1235,6 +1503,11 @@ final class AdvisoryEvaluatorTest extends TestCase
             $this->copyDirectory($fixtureRoot, $temporaryRoot);
             $this->materializeApacheProcLinks($temporaryRoot);
             $root = $temporaryRoot;
+        } elseif ($name === 'ubuntu-apache') {
+            $temporaryRoot = sys_get_temp_dir() . '/pra-advisory-ubuntu-apache-' . bin2hex(random_bytes(8));
+            $this->copyDirectory($fixtureRoot, $temporaryRoot);
+            $this->materializeApacheProcLinks($temporaryRoot, 456);
+            $root = $temporaryRoot;
         }
 
         try {
@@ -1250,13 +1523,11 @@ final class AdvisoryEvaluatorTest extends TestCase
         }
     }
 
-    private function materializeApacheProcLinks(string $root): void
+    private function materializeApacheProcLinks(string $root, int $pid = 789): void
     {
         foreach ([
-            '/proc/789/ns/mnt',
+            '/proc/' . $pid . '/ns/mnt',
             '/proc/self/ns/mnt',
-            '/proc/789/root',
-            '/proc/self/root',
         ] as $relativePath) {
             $path = $root . $relativePath;
             $target = file_get_contents($path);
@@ -1264,6 +1535,68 @@ final class AdvisoryEvaluatorTest extends TestCase
             self::assertNotSame('', trim($target));
             unlink($path);
             self::assertTrue(symlink(trim($target), $path));
+        }
+    }
+
+    /** @phpstan-return RuntimeInventory */
+    private function collectInventoryWithApacheNamespaceMismatch(): array
+    {
+        $fixtureRoot = dirname(__DIR__) . '/fixtures/runtime/synthetic-debian-apache-integrity';
+        $temporaryRoot = sys_get_temp_dir() . '/pra-apache-namespace-mismatch-' . bin2hex(random_bytes(8));
+        $this->copyDirectory($fixtureRoot, $temporaryRoot);
+        file_put_contents($temporaryRoot . '/proc/789/ns/mnt', 'mnt:[4026531841]');
+        $this->materializeApacheProcLinks($temporaryRoot);
+
+        try {
+            return (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($temporaryRoot),
+                $temporaryRoot,
+                '2026-10-25T00:00:00Z',
+            ))->collect();
+        } finally {
+            $this->removeDirectory($temporaryRoot);
+        }
+    }
+
+    /** @phpstan-return RuntimeInventory */
+    private function collectInventoryWithFpmNamespaceMismatch(): array
+    {
+        $fixtureRoot = dirname(__DIR__) . '/fixtures/runtime/debian-fpm';
+        $temporaryRoot = sys_get_temp_dir() . '/pra-fpm-root-mismatch-' . bin2hex(random_bytes(8));
+        $this->copyDirectory($fixtureRoot, $temporaryRoot);
+        mkdir($temporaryRoot . '/worker-root', 0777, true);
+        unlink($temporaryRoot . '/proc/123/root');
+        self::assertTrue(symlink('../../worker-root', $temporaryRoot . '/proc/123/root'));
+
+        try {
+            return (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($temporaryRoot),
+                $temporaryRoot,
+                '2026-10-25T00:00:00Z',
+            ))->collect();
+        } finally {
+            $this->removeDirectory($temporaryRoot);
+        }
+    }
+
+    /** @phpstan-return RuntimeInventory */
+    private function collectInventoryWithFpmPoolNamespaceMismatch(): array
+    {
+        $fixtureRoot = dirname(__DIR__) . '/fixtures/runtime/rhel10-fpm-pool-override';
+        $temporaryRoot = sys_get_temp_dir() . '/pra-fpm-pool-root-mismatch-' . bin2hex(random_bytes(8));
+        $this->copyDirectory($fixtureRoot, $temporaryRoot);
+        mkdir($temporaryRoot . '/worker-root', 0777, true);
+        unlink($temporaryRoot . '/proc/790/root');
+        self::assertTrue(symlink('../../worker-root', $temporaryRoot . '/proc/790/root'));
+
+        try {
+            return (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($temporaryRoot),
+                $temporaryRoot,
+                '2026-10-25T00:00:00Z',
+            ))->collect();
+        } finally {
+            $this->removeDirectory($temporaryRoot);
         }
     }
 
@@ -1348,10 +1681,10 @@ final class AdvisoryEvaluatorTest extends TestCase
             if ($entry->isDot()) {
                 continue;
             }
-            if ($entry->isDir()) {
-                $this->removeDirectory($entry->getPathname());
-            } else {
+            if ($entry->isLink() || !$entry->isDir()) {
                 unlink($entry->getPathname());
+            } else {
+                $this->removeDirectory($entry->getPathname());
             }
         }
         rmdir($directory);

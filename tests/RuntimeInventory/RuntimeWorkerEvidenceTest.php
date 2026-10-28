@@ -226,6 +226,11 @@ final class RuntimeWorkerEvidenceTest extends TestCase
             file_put_contents($directory . '/comm', 'php-fpm8.2');
             file_put_contents($directory . '/stat', $stat);
             file_put_contents($directory . '/cmdline', "php-fpm: pool " . $poolName . "\0\0");
+            mkdir($directory . '/ns', 0777, true);
+            symlink('mnt:[4026531836]', $directory . '/ns/mnt');
+            $rootIdentity = file_get_contents($this->root . '/proc/self/root');
+            self::assertIsString($rootIdentity);
+            file_put_contents($directory . '/root', $rootIdentity);
         }
 
         $inventory = $this->collect();
@@ -307,6 +312,11 @@ final class RuntimeWorkerEvidenceTest extends TestCase
         file_put_contents($this->root . '/proc/124/stat', '124 (php-fpm7.4) S 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 12450');
         file_put_contents($this->root . '/proc/124/cmdline', "/usr/sbin/php-fpm7.4\0--nodaemonize\0");
         file_put_contents($this->root . '/proc/124/exe', '/usr/sbin/php-fpm7.4');
+        mkdir($this->root . '/proc/124/ns', 0777, true);
+        symlink('mnt:[4026531836]', $this->root . '/proc/124/ns/mnt');
+        $rootIdentity = file_get_contents($this->root . '/proc/self/root');
+        self::assertIsString($rootIdentity);
+        file_put_contents($this->root . '/proc/124/root', $rootIdentity);
         mkdir($this->root . '/etc/php/7.4/fpm', 0777, true);
         file_put_contents($this->root . '/etc/php/7.4/fpm/php.ini', "session.upload_progress.enabled=1\nsession.serialize_handler=php_serialize\n");
 
@@ -319,7 +329,7 @@ final class RuntimeWorkerEvidenceTest extends TestCase
         }
         $id = DiscoveredPhpCommand::fromPath('/usr/sbin/php-fpm7.4', 'fpm')->id();
         $commands['commands'][$id] = ['exit_code' => 0, 'stdout' => 'PHP 7.4.33 (fpm-fcgi) (built: fixture)'];
-        $commands['commands']['dpkg-packages']['stdout'] .= "php7.4-fpm\t7.4.33-1+deb.sury.org+1\tinstall ok installed\n";
+        $commands['commands']['dpkg-packages']['stdout'] .= "php7.4-fpm\t7.4.33-1+deb.sury.org+1\tinstall ok installed\tamd64\n";
         file_put_contents($this->root . '/commands.json', json_encode($commands, JSON_THROW_ON_ERROR));
 
         $inventory = $this->collect();
@@ -955,6 +965,13 @@ final class RuntimeWorkerEvidenceTest extends TestCase
         file_put_contents($workerDirectory . '/exe', $masterExe);
         file_put_contents($workerDirectory . '/stat', $workerStat);
         file_put_contents($workerDirectory . '/cmdline', 'php-fpm: pool ' . $poolName . "\0\0");
+        mkdir($workerDirectory . '/ns', 0777, true);
+        symlink('mnt:[4026531836]', $workerDirectory . '/ns/mnt');
+        $rootIdentity = file_get_contents($this->root . '/proc/self/root');
+        if (!is_string($rootIdentity)) {
+            throw new \LogicException('The FPM fixture must include a collector root identity.');
+        }
+        file_put_contents($workerDirectory . '/root', $rootIdentity);
 
         return 'worker-' . $workerPid . '-' . $startTicks;
     }
@@ -967,7 +984,11 @@ final class RuntimeWorkerEvidenceTest extends TestCase
                 continue;
             }
             $target = $destination . '/' . $entry->getFilename();
-            if ($entry->isDir()) {
+            if ($entry->isLink()) {
+                $link = readlink($entry->getPathname());
+                self::assertIsString($link);
+                symlink($link, $target);
+            } elseif ($entry->isDir()) {
                 $this->copyDirectory($entry->getPathname(), $target);
             } else {
                 copy($entry->getPathname(), $target);
@@ -981,10 +1002,10 @@ final class RuntimeWorkerEvidenceTest extends TestCase
             if ($entry->isDot()) {
                 continue;
             }
-            if ($entry->isDir()) {
-                $this->removeDirectory($entry->getPathname());
-            } else {
+            if ($entry->isLink() || !$entry->isDir()) {
                 unlink($entry->getPathname());
+            } else {
+                $this->removeDirectory($entry->getPathname());
             }
         }
         rmdir($directory);

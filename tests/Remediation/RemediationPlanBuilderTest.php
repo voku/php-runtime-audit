@@ -133,10 +133,107 @@ final class RemediationPlanBuilderTest extends TestCase
             self::assertIsString($configurationFactId);
             $configurationFact = $factsById[$configurationFactId] ?? null;
             self::assertIsArray($configurationFact);
-            self::assertStringStartsWith('configuration.', $configurationFact['key']);
+            self::assertStringStartsWith('configuration.target.', $configurationFact['key']);
+            self::assertStringContainsString('.fpm.', $configurationFact['key']);
             self::assertContains($configurationFactId, $action->evidenceIds);
             self::assertStringContainsString('`' . $configurationFactId . '`', $markdown);
         }
+    }
+
+    public function test_fpm_remediation_citations_are_scoped_to_each_runtime_configuration_root(): void
+    {
+        $inventory = $this->collectInventory('cve115560-config');
+        $secondWorker = $inventory['workers'][0];
+        $secondWorker['id'] = 'worker-805-54321';
+        $secondWorker['pid'] = 805;
+        $secondWorker['parent_pid'] = null;
+        $secondWorker['process_name'] = 'php-fpm8.3';
+        $secondWorker['executable_path'] = '/usr/sbin/php-fpm8.3';
+        $secondWorker['version'] = '8.3.5';
+        $secondWorker['fpm_configuration_path'] = null;
+        $secondWorker['fpm_configuration_state'] = 'default';
+        $secondWorker['fpm_pool_name'] = null;
+        $inventory['workers'][] = $secondWorker;
+
+        $secondRoot = '/etc/php/8.3/fpm';
+        $secondFile = $secondRoot . '/php.ini';
+        $uploadSetting = $inventory['configuration_by_sapi']['fpm']['session.upload_progress.enabled'];
+        $uploadSetting['observations'][] = [
+            'value' => '1',
+            'file' => $secondFile,
+            'context' => 'global',
+            'configuration_root' => $secondRoot,
+        ];
+        $uploadSetting['files'][] = $secondFile;
+        $uploadSetting['state'] = 'conflict';
+        $uploadSetting['value'] = null;
+        $inventory['configuration_by_sapi']['fpm']['session.upload_progress.enabled'] = $uploadSetting;
+
+        $serializeSetting = $inventory['configuration_by_sapi']['fpm']['session.serialize_handler'];
+        $serializeSetting['observations'][] = [
+            'value' => 'php_serialize',
+            'file' => $secondFile,
+            'context' => 'global',
+            'configuration_root' => $secondRoot,
+        ];
+        $serializeSetting['files'][] = $secondFile;
+        $serializeSetting['state'] = 'conflict';
+        $serializeSetting['value'] = null;
+        $inventory['configuration_by_sapi']['fpm']['session.serialize_handler'] = $serializeSetting;
+
+        $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
+        $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+        $plan = (new RemediationPlanBuilder())->build($report);
+        $actions = array_values(array_filter(
+            $plan->actions,
+            static fn($action): bool => $action->cve === 'CVE-2026-115560'
+                && $action->kind === RemediationActionKind::InvestigateConfiguration,
+        ));
+        $factsById = [];
+        $factsByKey = [];
+        foreach ($evaluation['facts'] as $fact) {
+            $factsById[$fact['fact_id']] = $fact;
+            $factsByKey[$fact['key']] = $fact['value'];
+        }
+        $expectedRoots = [];
+        foreach (array_slice($inventory['workers'], 0, -1) as $worker) {
+            $expectedRoots[$worker['id']] = '/usr/local/etc';
+        }
+        $expectedRoots[$secondWorker['id']] = $secondRoot;
+
+        self::assertNotEmpty($actions);
+        $rootsCovered = [];
+        foreach ($actions as $action) {
+            $expectedRoot = $expectedRoots[$action->subjectId] ?? null;
+            self::assertIsString($expectedRoot, 'An FPM remediation action must resolve to a known worker runtime.');
+            $basis = $factsByKey['advisory.CVE-2026-115560.' . $action->subjectId . '.assessment_basis'] ?? null;
+            self::assertIsArray($basis);
+            $configurationFactIds = $basis['configuration_fact_ids'] ?? null;
+            self::assertIsArray($configurationFactIds);
+            self::assertNotEmpty($configurationFactIds);
+            foreach ($configurationFactIds as $configurationFactId) {
+                self::assertIsString($configurationFactId);
+                $configurationFact = $factsById[$configurationFactId] ?? null;
+                self::assertIsArray($configurationFact);
+                self::assertContains($configurationFactId, $action->evidenceIds);
+                $configurationValue = $configurationFact['value'];
+                if ($configurationValue instanceof \stdClass) {
+                    $configurationValue = get_object_vars($configurationValue);
+                }
+                self::assertIsArray($configurationValue);
+                $observations = $configurationValue['observations'] ?? null;
+                self::assertIsArray($observations);
+                self::assertNotEmpty($observations);
+                foreach ($observations as $observation) {
+                    self::assertIsArray($observation);
+                    self::assertSame($expectedRoot, $observation['configuration_root']);
+                }
+            }
+            $rootsCovered[$expectedRoot] = true;
+        }
+
+        self::assertArrayHasKey('/usr/local/etc', $rootsCovered);
+        self::assertArrayHasKey($secondRoot, $rootsCovered);
     }
 
     public function test_unknown_subject_evidence_and_unknown_vendor_status_use_different_kinds(): void

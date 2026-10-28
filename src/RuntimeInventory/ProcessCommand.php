@@ -51,7 +51,7 @@ enum ProcessCommand: string implements ProcessCommandSpec
             self::Fpm84Alpine => ['/usr/sbin/php-fpm84', '-n', '-v'],
             self::Fpm85Alpine => ['/usr/sbin/php-fpm85', '-n', '-v'],
             self::DpkgPackages => [
-                '/usr/bin/dpkg-query', '-W', '-f=${Package}\t${Version}\t${Status}\n', '*php*',
+                '/usr/bin/dpkg-query', '-W', '-f=${Package}\t${Version}\t${Status}\t${Architecture}\n', '*php*',
             ],
             self::RpmPackages => [
                 '/usr/bin/rpm', '-qa', '--qf', '%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}\n', 'php*', 'mod_php*',

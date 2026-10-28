@@ -10,7 +10,7 @@
     },
     "dpkg-packages": {
       "exit_code": 0,
-      "stdout": "php8.5-cli\t8.5.0-1~deb12u1\tinstall ok installed\nphp8.5-fpm\t8.5.0-1~deb12u1\tinstall ok installed\n"
+      "stdout": "php8.5-cli\t8.5.0-1~deb12u1\tinstall ok installed\tamd64\nphp8.5-fpm\t8.5.0-1~deb12u1\tinstall ok installed\tamd64\n"
     }
   }
 }

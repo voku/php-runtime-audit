@@ -57,12 +57,12 @@ final class RuntimePackageProvenanceTest extends TestCase
         );
         $fpmInventory = $this->collect();
         self::assertContains(
-            ['name' => 'php8.2-fpm', 'version' => '8.2.35-1~deb12u1'],
+            ['name' => 'php8.2-fpm', 'version' => '8.2.35-1~deb12u1', 'architecture' => 'amd64'],
             $fpmInventory['packages'],
         );
         self::assertTrue($fpmInventory['workers'][0]['package_provenance']['verified']);
         $fpmEvaluation = (new AdvisoryEvaluator())->evaluate($fpmInventory, AdvisoryCatalog::load());
-        $fpmPackageId = 'package-' . substr(hash('sha256', "php8.2-fpm\0" . '8.2.35-1~deb12u1'), 0, 20);
+        $fpmPackageId = 'package-' . substr(hash('sha256', "php8.2-fpm\0" . '8.2.35-1~deb12u1' . "\0" . 'amd64'), 0, 20);
         self::assertContains($fpmPackageId, array_column($fpmEvaluation['assessments'], 'subject_id'));
 
         $this->setDpkgPackageStatus($this->apacheRoot, 'libapache2-mod-php8.2', 'hold ok installed');
@@ -72,12 +72,12 @@ final class RuntimePackageProvenanceTest extends TestCase
         );
         $apacheInventory = $this->collectApache();
         self::assertContains(
-            ['name' => 'libapache2-mod-php8.2', 'version' => '8.2.35-1~deb12u1'],
+            ['name' => 'libapache2-mod-php8.2', 'version' => '8.2.35-1~deb12u1', 'architecture' => 'amd64'],
             $apacheInventory['packages'],
         );
         self::assertTrue($apacheInventory['workers'][0]['package_provenance']['verified']);
         $apacheEvaluation = (new AdvisoryEvaluator())->evaluate($apacheInventory, AdvisoryCatalog::load());
-        $apachePackageId = 'package-' . substr(hash('sha256', "libapache2-mod-php8.2\0" . '8.2.35-1~deb12u1'), 0, 20);
+        $apachePackageId = 'package-' . substr(hash('sha256', "libapache2-mod-php8.2\0" . '8.2.35-1~deb12u1' . "\0" . 'amd64'), 0, 20);
         self::assertContains($apachePackageId, array_column($apacheEvaluation['assessments'], 'subject_id'));
     }
 
@@ -92,7 +92,7 @@ final class RuntimePackageProvenanceTest extends TestCase
         $inventory = $this->collect();
         self::assertSame('incomplete', $inventory['package_inventory_state']);
         self::assertContains(
-            ['name' => 'php8.2-fpm', 'version' => '8.2.35-1~deb12u1'],
+            ['name' => 'php8.2-fpm', 'version' => '8.2.35-1~deb12u1', 'architecture' => 'amd64'],
             $inventory['packages'],
         );
         self::assertFalse($inventory['workers'][0]['package_provenance']['verified']);
@@ -105,7 +105,7 @@ final class RuntimePackageProvenanceTest extends TestCase
         self::assertNotNull($packageCoverage[0]['gap']);
 
         $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
-        $packageId = 'package-' . substr(hash('sha256', "php8.2-fpm\0" . '8.2.35-1~deb12u1'), 0, 20);
+        $packageId = 'package-' . substr(hash('sha256', "php8.2-fpm\0" . '8.2.35-1~deb12u1' . "\0" . 'amd64'), 0, 20);
         $packageAssessments = array_values(array_filter(
             $evaluation['assessments'],
             static fn(array $assessment): bool => $assessment['subject_id'] === $packageId,
@@ -118,12 +118,12 @@ final class RuntimePackageProvenanceTest extends TestCase
 
     public function test_not_installed_dpkg_rows_do_not_block_installed_package_coverage(): void
     {
-        $this->appendDpkgPackageQueryRow($this->root, "php\t\tunknown ok not-installed");
+        $this->appendDpkgPackageQueryRow($this->root, "php\t\tunknown ok not-installed\tall");
 
         $inventory = $this->collect();
         self::assertSame('attempted', $inventory['package_inventory_state']);
         self::assertContains(
-            ['name' => 'php8.2-fpm', 'version' => '8.2.35-1~deb12u1'],
+            ['name' => 'php8.2-fpm', 'version' => '8.2.35-1~deb12u1', 'architecture' => 'amd64'],
             $inventory['packages'],
         );
         $packageCoverage = array_values(array_filter(
@@ -135,7 +135,7 @@ final class RuntimePackageProvenanceTest extends TestCase
         self::assertNull($packageCoverage[0]['gap']);
 
         $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
-        $packageId = 'package-' . substr(hash('sha256', "php8.2-fpm\0" . '8.2.35-1~deb12u1'), 0, 20);
+        $packageId = 'package-' . substr(hash('sha256', "php8.2-fpm\0" . '8.2.35-1~deb12u1' . "\0" . 'amd64'), 0, 20);
         $fixedAssessments = array_values(array_filter(
             $evaluation['assessments'],
             static fn(array $assessment): bool => $assessment['subject_id'] === $packageId
@@ -152,11 +152,11 @@ final class RuntimePackageProvenanceTest extends TestCase
         $inventory = $this->collect();
         self::assertSame('incomplete', $inventory['package_inventory_state']);
         self::assertContains(
-            ['name' => 'php8.2-cli', 'version' => '8.2.35-1~deb12u1'],
+            ['name' => 'php8.2-cli', 'version' => '8.2.35-1~deb12u1', 'architecture' => 'amd64'],
             $inventory['packages'],
         );
         self::assertNotContains(
-            ['name' => 'php8.2-fpm', 'version' => '8.2.35-1~deb12u1'],
+            ['name' => 'php8.2-fpm', 'version' => '8.2.35-1~deb12u1', 'architecture' => 'amd64'],
             $inventory['packages'],
         );
         self::assertFalse($inventory['workers'][0]['package_provenance']['verified']);
@@ -170,7 +170,7 @@ final class RuntimePackageProvenanceTest extends TestCase
         self::assertNotNull($packageCoverage[0]['gap']);
 
         $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
-        $packageId = 'package-' . substr(hash('sha256', "php8.2-fpm\0" . '8.2.35-1~deb12u1'), 0, 20);
+        $packageId = 'package-' . substr(hash('sha256', "php8.2-fpm\0" . '8.2.35-1~deb12u1' . "\0" . 'amd64'), 0, 20);
         self::assertNotContains($packageId, array_column($evaluation['assessments'], 'subject_id'));
     }
 
@@ -260,7 +260,9 @@ final class RuntimePackageProvenanceTest extends TestCase
     public function test_synthetic_unversioned_apache_module_claimed_by_exactly_one_package_is_verified(): void
     {
         $inventory = $this->collectApache();
-        $proof = $inventory['workers'][0]['package_provenance'];
+        $worker = $inventory['workers'][0];
+        self::assertTrue($worker['apache_namespace_verified'] ?? false);
+        $proof = $worker['package_provenance'];
         self::assertTrue($proof['verified']);
         self::assertSame('libapache2-mod-php8.2', $proof['package_name']);
         self::assertSame('8.2.35-1~deb12u1', $proof['package_version']);
@@ -306,7 +308,7 @@ final class RuntimePackageProvenanceTest extends TestCase
             );
             file_put_contents(
                 $this->apacheRoot . '/commands.json',
-                '{"commands":{"dpkg-packages":{"exit_code":0,"stdout":"libapache2-mod-php8.2\\t8.2.35-1~deb12u1\\tinstall ok installed\\nlibapache2-mod-php8.3\\t8.3.6-1~deb12u1\\tinstall ok installed\\n"}}}',
+                '{"commands":{"dpkg-packages":{"exit_code":0,"stdout":"libapache2-mod-php8.2\\t8.2.35-1~deb12u1\\tinstall ok installed\\tamd64\\nlibapache2-mod-php8.3\\t8.3.6-1~deb12u1\\tinstall ok installed\\tamd64\\n"}}}',
             );
         } elseif ($case === 'package-version-mismatch') {
             file_put_contents($status, "Package: libapache2-mod-php8.2\nStatus: install ok installed\nArchitecture: amd64\nVersion: 8.2.34-1~deb12u1\n");
@@ -347,10 +349,12 @@ final class RuntimePackageProvenanceTest extends TestCase
             symlink($this->apacheRoot . '/alternate-process-root', $this->apacheRoot . '/proc/789/root');
         }
 
-        $proof = $this->collectApache()['workers'][0]['package_provenance'];
+        $worker = $this->collectApache()['workers'][0];
+        $proof = $worker['package_provenance'];
         self::assertFalse($proof['verified']);
         if (in_array($case, ['different-mount-namespace', 'different-process-root'], true)) {
             self::assertSame('worker_namespace_identity_unverified', $proof['reason']);
+            self::assertFalse($worker['apache_namespace_verified'] ?? true);
         }
     }
 
@@ -365,7 +369,7 @@ final class RuntimePackageProvenanceTest extends TestCase
         $inventory = $this->collectApache();
         self::assertSame([], $inventory['packages']);
 
-        $packageId = 'package-' . substr(hash('sha256', "libapache2-mod-php8.2\0" . '8.2.35-1~deb12u1'), 0, 20);
+        $packageId = 'package-' . substr(hash('sha256', "libapache2-mod-php8.2\0" . '8.2.35-1~deb12u1' . "\0" . 'amd64'), 0, 20);
         $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
         $assessedSubjectIds = array_column($evaluation['assessments'], 'subject_id');
         self::assertNotContains($packageId, $assessedSubjectIds);
@@ -427,7 +431,7 @@ final class RuntimePackageProvenanceTest extends TestCase
         $lines = preg_split('/\r?\n/', trim($output)) ?: [];
         foreach ($lines as $index => $line) {
             $parts = explode("\t", $line);
-            if (count($parts) === 3 && $parts[0] === $packageName) {
+            if (count($parts) === 4 && $parts[0] === $packageName) {
                 $parts[2] = $status;
                 $lines[$index] = implode("\t", $parts);
             }
@@ -460,8 +464,6 @@ final class RuntimePackageProvenanceTest extends TestCase
         foreach ([
             '/proc/789/ns/mnt',
             '/proc/self/ns/mnt',
-            '/proc/789/root',
-            '/proc/self/root',
         ] as $relativePath) {
             $path = $this->apacheRoot . $relativePath;
             $target = file_get_contents($path);
