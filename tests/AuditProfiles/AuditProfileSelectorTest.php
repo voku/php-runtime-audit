@@ -237,6 +237,19 @@ final class AuditProfileSelectorTest extends TestCase
         (new ProfileContextBuilder())->load($selection);
     }
 
+    public function test_context_builder_rejects_profiles_from_another_phar_archive(): void
+    {
+        $selection = (new AuditProfileSelector())->select(
+            AuditIntent::RuntimePatch,
+            AuditFacts::fromArray([]),
+        );
+
+        $this->expectException(RuntimeException::class);
+        (new ProfileContextBuilder(
+            'phar:///tmp/untrusted-runtime-audit.phar/resources/skills/php-runtime-audit/profiles',
+        ))->load($selection);
+    }
+
     public function test_context_builder_rejects_symlinked_profile_resources(): void
     {
         $temporaryRoot = sys_get_temp_dir() . '/php-runtime-audit-' . bin2hex(random_bytes(8));
