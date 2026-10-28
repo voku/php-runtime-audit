@@ -25,6 +25,7 @@ foreach ($plan['actions'] as $action) {
 
 $attempted = 0;
 $blocked = 0;
+$blockedChecks = [];
 foreach ($inventory['records'] as $record) {
     if (($record['record_type'] ?? null) !== 'coverage') {
         continue;
@@ -32,6 +33,17 @@ foreach ($inventory['records'] as $record) {
     foreach (($record['entries'] ?? []) as $entry) {
         $attempted += (int) (($entry['status'] ?? null) === 'attempted');
         $blocked += (int) (($entry['status'] ?? null) === 'blocked');
+        if (($entry['status'] ?? null) === 'blocked') {
+            $checkId = $entry['check_id'] ?? null;
+            // Emit only pre-reviewed, stable identifiers, not free-text gaps.
+            if (is_string($checkId) && in_array($checkId, [
+                'runtime.cli', 'runtime.packages', 'runtime.workers',
+                'runtime.configuration', 'runtime.discovery',
+                'advisory.assessment_targets',
+            ], true)) {
+                $blockedChecks[] = $checkId;
+            }
+        }
     }
 }
 
@@ -61,6 +73,12 @@ $result = [
     'assessment_count' => $summary['assessment_count'] ?? null,
     'coverage_attempted' => $attempted,
     'coverage_blocked' => $blocked,
+    'blocked_check_ids' => array_values(array_unique($blockedChecks)),
+    'namespace_creation_supported' => match (getenv('PRA_NAMESPACE_SUPPORTED')) {
+        'yes' => true,
+        'no' => false,
+        default => null,
+    },
     'verdict_counts' => $counts,
     'automatic_apply' => false,
     'human_approval_required_for_every_action' => true,

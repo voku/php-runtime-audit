@@ -52,6 +52,13 @@ jobs:
           timeout 75s php "$RUNNER_TEMP/php-runtime-audit.phar" inventory > "$RUNNER_TEMP/pra-private/inventory.json"
           timeout 45s php "$RUNNER_TEMP/php-runtime-audit.phar" report --report "$RUNNER_TEMP/pra-private/report.md" \
             < "$RUNNER_TEMP/pra-private/inventory.json" > "$RUNNER_TEMP/pra-private/plan.json"
+          # Run the exact no-new-privileges, user+network namespace preflight.
+          # This is a capability check only, with no network or payload.
+          if timeout 5s /usr/bin/setpriv --no-new-privs /usr/bin/unshare --user --map-root-user --net -- true > /dev/null 2>&1; then
+            export PRA_NAMESPACE_SUPPORTED=yes
+          else
+            export PRA_NAMESPACE_SUPPORTED=no
+          fi
           php tools/host-dogfood/summarize.php \
             "$RUNNER_TEMP/pra-private/inventory.json" \
             "$RUNNER_TEMP/pra-private/plan.json" \
