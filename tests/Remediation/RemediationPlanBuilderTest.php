@@ -129,6 +129,51 @@ final class RemediationPlanBuilderTest extends TestCase
         }
     }
 
+    public function test_verified_fixed_inconsistent_patch_status_does_not_suppress_remediation(): void
+    {
+        $inventory = $this->collectInventory('debian-fpm');
+        $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
+        $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+
+        $targetIndex = null;
+        foreach ($report['records'] as $index => $record) {
+            if (($record['record_type'] ?? null) === 'assessment'
+                && ($record['verdict'] ?? null) === 'verified_fixed'
+                && ($record['patch_status'] ?? null) === 'verified_fixed') {
+                $targetIndex = $index;
+                break;
+            }
+        }
+        self::assertNotNull($targetIndex, 'Fixture needs a real evidence-backed fixed assessment.');
+        self::assertNotEmpty($report['records'][$targetIndex]['patch_evidence_ids']);
+
+        $subjectId = $report['records'][$targetIndex]['subject_id'];
+        $recordId = $report['records'][$targetIndex]['record_id'];
+        self::assertIsString($subjectId);
+        self::assertIsString($recordId);
+        $cve = explode(':', $recordId)[1];
+
+        // The assessment still cites its genuine fixed basis, but its other
+        // explicit security field is inconsistent. It must not mean "safe".
+        foreach (['unknown', 'potentially_affected', null] as $patchStatus) {
+            $mutated = $report;
+            if ($patchStatus === null) {
+                unset($mutated['records'][$targetIndex]['patch_status']);
+            } else {
+                $mutated['records'][$targetIndex]['patch_status'] = $patchStatus;
+            }
+            $plan = (new RemediationPlanBuilder())->build($mutated);
+            $actions = array_values(array_filter(
+                $plan->actions,
+                static fn($action): bool => $action->subjectId === $subjectId && $action->cve === $cve,
+            ));
+            self::assertCount(1, $actions);
+            self::assertSame(RemediationActionKind::AwaitVendorEvidence, $actions[0]->kind);
+            self::assertTrue($actions[0]->requiresHumanApproval);
+            self::assertFalse($plan->toArray()['automatic_apply']);
+        }
+    }
+
     public function test_potentially_affected_worker_produces_upgrade_proposal_with_full_fields(): void
     {
         $plan = $this->buildPlanFor('debian-fpm-vulnerable');
