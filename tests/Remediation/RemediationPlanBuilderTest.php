@@ -66,14 +66,25 @@ final class RemediationPlanBuilderTest extends TestCase
             if (($record['record_type'] ?? null) !== 'observation') {
                 continue;
             }
-            foreach ($record['facts'] ?? [] as $fact) {
-                $factsById[$fact['fact_id']] = $fact;
+            $rawFacts = $record['facts'] ?? null;
+            if (!is_array($rawFacts)) {
+                continue;
+            }
+            foreach ($rawFacts as $fact) {
+                if (is_array($fact) && is_string($fact['fact_id'] ?? null)) {
+                    $factsById[$fact['fact_id']] = $fact;
+                }
             }
         }
         // The evaluator deliberately includes subject/package identity IDs in
         // patch_evidence_ids. Their presence alone cannot prove a fixed patch.
         $identityOnlyEvidenceIds = [];
-        foreach ($report['records'][$targetIndex]['patch_evidence_ids'] as $evidenceId) {
+        $originalPatchEvidenceIds = $report['records'][$targetIndex]['patch_evidence_ids'] ?? null;
+        self::assertIsArray($originalPatchEvidenceIds);
+        foreach ($originalPatchEvidenceIds as $evidenceId) {
+            if (!is_string($evidenceId)) {
+                continue;
+            }
             $fact = $factsById[$evidenceId] ?? null;
             if (is_array($fact) && is_string($fact['key'] ?? null)
                 && str_starts_with($fact['key'], 'package.')) {
