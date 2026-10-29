@@ -94,7 +94,24 @@ final class RemediationPlanBuilderTest extends TestCase
         }
         self::assertNotEmpty($identityOnlyEvidenceIds);
 
-        foreach ([[], ['fact.nonexistent.patch-evidence'], $identityOnlyEvidenceIds] as $unresolvedEvidenceIds) {
+        // The producer creates a separate basis for each subject. A basis for
+        // another subject with the same CVE must not validate this subject.
+        $cve = explode(':', $targetId)[1];
+        $otherSubjectBasisEvidenceIds = [];
+        foreach ($factsById as $evidenceId => $fact) {
+            if (!is_string($fact['key'] ?? null)) {
+                continue;
+            }
+            if (str_starts_with($fact['key'], 'advisory.' . $cve . '.')
+                && str_ends_with($fact['key'], '.assessment_basis')
+                && $fact['key'] !== 'advisory.' . $cve . '.' . $subjectId . '.assessment_basis') {
+                $otherSubjectBasisEvidenceIds = [$evidenceId];
+                break;
+            }
+        }
+        self::assertNotEmpty($otherSubjectBasisEvidenceIds, 'The fixture must include a second subject assessment basis.');
+
+        foreach ([[], ['fact.nonexistent.patch-evidence'], $identityOnlyEvidenceIds, $otherSubjectBasisEvidenceIds] as $unresolvedEvidenceIds) {
             $mutated = $report;
             $mutated['records'][$targetIndex]['patch_evidence_ids'] = $unresolvedEvidenceIds;
             $plan = (new RemediationPlanBuilder())->build($mutated);
