@@ -195,7 +195,7 @@ final class RemediationPlanBuilder
         ];
         if ($verdict === 'verified_fixed' && (!$hasMatchingPatchBasis || $patchStatus !== 'verified_fixed')) {
             $warnings[] = sprintf(
-                '%s claims verified_fixed for %s without consistent fixed patch status and citable assessment-specific patch evidence; the remediation recommendation was downgraded to unknown.',
+                '%s claims verified_fixed for %s with no resolvable patch evidence or inconsistent fixed patch status; the remediation recommendation was downgraded to unknown.',
                 $cve,
                 $subjectId,
             );
