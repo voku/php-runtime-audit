@@ -36,6 +36,49 @@ final class RemediationPlanBuilderTest extends TestCase
         }
     }
 
+    public function test_verified_fixed_missing_patch_evidence_never_produces_no_action_required(): void
+    {
+        $inventory = $this->collectInventory('debian-fpm');
+        $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
+        $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+
+        $targetIndex = null;
+        $targetId = null;
+        $subjectId = null;
+        foreach ($report['records'] as $index => $record) {
+            if (($record['record_type'] ?? null) !== 'assessment'
+                || ($record['verdict'] ?? null) !== 'verified_fixed'
+                || !is_string($record['subject_id'] ?? null)
+                || !str_starts_with($record['subject_id'], 'package-')) {
+                continue;
+            }
+            $targetIndex = $index;
+            $targetId = $record['record_id'];
+            $subjectId = $record['subject_id'];
+            break;
+        }
+        self::assertNotNull($targetIndex, 'The fixture must contain a verified fixed package assessment.');
+        self::assertIsString($targetId);
+        self::assertIsString($subjectId);
+
+        foreach ([[], ['fact.nonexistent.patch-evidence']] as $unresolvedEvidenceIds) {
+            $mutated = $report;
+            $mutated['records'][$targetIndex]['patch_evidence_ids'] = $unresolvedEvidenceIds;
+            $plan = (new RemediationPlanBuilder())->build($mutated);
+            $actions = array_values(array_filter(
+                $plan->actions,
+                static fn($action): bool => $action->subjectId === $subjectId
+                    && $action->cve === explode(':', $targetId)[1],
+            ));
+
+            self::assertCount(1, $actions);
+            self::assertSame(RemediationActionKind::AwaitVendorEvidence, $actions[0]->kind);
+            self::assertNotEmpty($actions[0]->evidenceIds, 'Identity facts should still resolve, but not serve as patch proof.');
+            self::assertStringContainsString('no resolvable patch evidence', implode(' ', $plan->warnings));
+            self::assertFalse($plan->toArray()['automatic_apply']);
+        }
+    }
+
     public function test_potentially_affected_worker_produces_upgrade_proposal_with_full_fields(): void
     {
         $plan = $this->buildPlanFor('debian-fpm-vulnerable');
