@@ -154,17 +154,18 @@ final class RemediationPlanBuilder
             return null;
         }
         $cve = $parts[1];
-        $validEvidenceIds = [];
+        $validPatchEvidenceIds = [];
         foreach ($patchEvidenceIds as $evidenceId) {
             if (is_string($evidenceId) && isset($factsById[$evidenceId])) {
-                $validEvidenceIds[] = $evidenceId;
+                $validPatchEvidenceIds[] = $evidenceId;
             } elseif (is_string($evidenceId)) {
                 $warnings[] = sprintf('%s cites evidence_id "%s" that does not match any fact in this report; it was dropped.', $cve, SafeText::plain($evidenceId, 64));
             }
         }
 
         $identity = SubjectIdentity::resolveIndexed($factsByKey, $subjectId);
-        $validEvidenceIds = array_values(array_unique([...$validEvidenceIds, ...$identity->evidenceIds]));
+        // Identity facts identify the subject; they do not establish the patch verdict.
+        $validEvidenceIds = array_values(array_unique([...$validPatchEvidenceIds, ...$identity->evidenceIds]));
         if ($verdict === 'needs_investigation') {
             $configurationEvidenceIds = $this->configurationEvidenceIds($cve, $subjectId, $factsById, $factsByKey);
             $validEvidenceIds = array_values(array_unique([...$validEvidenceIds, ...$configurationEvidenceIds]));
@@ -181,9 +182,16 @@ final class RemediationPlanBuilder
             'A matched package version is not proof the running worker process was restarted since patching.',
             'Host compromise status is tracked independently of patch status and remains unknown regardless of this verdict.',
         ];
-        if ($verdict === 'verified_fixed' && $validEvidenceIds === []) {
-            $warnings[] = sprintf('%s claims verified_fixed for %s but cites no evidence present in this report; treat with caution and verify independently.', $cve, $subjectId);
-            array_unshift($verifiedFixedUnknowns, 'This report cites no evidence for this verified_fixed claim; it could not be independently confirmed here.');
+        if ($verdict === 'verified_fixed' && $validPatchEvidenceIds === []) {
+            $warnings[] = sprintf(
+                '%s claims verified_fixed for %s with no resolvable patch evidence; the remediation recommendation was downgraded to unknown.',
+                $cve,
+                $subjectId,
+            );
+            // A warning beside "no_action_required" is not a safe fallback. Do not
+            // mistake independently resolved identity facts for proof of a patch.
+            $verdict = 'unknown';
+            $safeRationale = 'The source assessment claims a fixed build but has no resolvable patch evidence in this report.';
         }
 
         return match ($verdict) {
