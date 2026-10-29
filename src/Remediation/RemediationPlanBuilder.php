@@ -155,9 +155,17 @@ final class RemediationPlanBuilder
         }
         $cve = $parts[1];
         $validPatchEvidenceIds = [];
+        $assessmentBasisKey = 'advisory.' . $cve . '.' . $subjectId . '.assessment_basis';
+        $hasMatchingPatchBasis = false;
         foreach ($patchEvidenceIds as $evidenceId) {
             if (is_string($evidenceId) && isset($factsById[$evidenceId])) {
                 $validPatchEvidenceIds[] = $evidenceId;
+                // The producer includes runtime/package identity IDs in this list.
+                // Only a cited basis fact for this exact CVE and subject can
+                // substantiate the assessment; identities alone cannot.
+                if ($factsById[$evidenceId]['key'] === $assessmentBasisKey) {
+                    $hasMatchingPatchBasis = true;
+                }
             } elseif (is_string($evidenceId)) {
                 $warnings[] = sprintf('%s cites evidence_id "%s" that does not match any fact in this report; it was dropped.', $cve, SafeText::plain($evidenceId, 64));
             }
@@ -182,9 +190,9 @@ final class RemediationPlanBuilder
             'A matched package version is not proof the running worker process was restarted since patching.',
             'Host compromise status is tracked independently of patch status and remains unknown regardless of this verdict.',
         ];
-        if ($verdict === 'verified_fixed' && $validPatchEvidenceIds === []) {
+        if ($verdict === 'verified_fixed' && !$hasMatchingPatchBasis) {
             $warnings[] = sprintf(
-                '%s claims verified_fixed for %s with no resolvable patch evidence; the remediation recommendation was downgraded to unknown.',
+                '%s claims verified_fixed for %s with no resolvable patch evidence (missing this assessment\'s cited patch basis); the remediation recommendation was downgraded to unknown.',
                 $cve,
                 $subjectId,
             );
