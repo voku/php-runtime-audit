@@ -138,6 +138,7 @@ final class RemediationPlanBuilder
         $recordId = $record['record_id'] ?? null;
         $subjectId = $record['subject_id'] ?? null;
         $verdict = $record['verdict'] ?? null;
+        $patchStatus = $record['patch_status'] ?? null;
         $rationale = $record['rationale'] ?? null;
         $patchEvidenceIds = $record['patch_evidence_ids'] ?? null;
         if (!is_string($recordId) || !is_string($subjectId) || $subjectId === ''
@@ -192,16 +193,17 @@ final class RemediationPlanBuilder
             'A matched package version is not proof the running worker process was restarted since patching.',
             'Host compromise status is tracked independently of patch status and remains unknown regardless of this verdict.',
         ];
-        if ($verdict === 'verified_fixed' && !$hasMatchingPatchBasis) {
+        if ($verdict === 'verified_fixed' && (!$hasMatchingPatchBasis || $patchStatus !== 'verified_fixed')) {
             $warnings[] = sprintf(
-                '%s claims verified_fixed for %s with no resolvable patch evidence (missing this assessment\'s cited patch basis); the remediation recommendation was downgraded to unknown.',
+                '%s claims verified_fixed for %s without consistent fixed patch status and citable assessment-specific patch evidence; the remediation recommendation was downgraded to unknown.',
                 $cve,
                 $subjectId,
             );
-            // A warning beside "no_action_required" is not a safe fallback. Do not
-            // mistake independently resolved identity facts for proof of a patch.
+            // A no-action recommendation requires both explicit security fields to
+            // agree and a cited patch basis for this exact CVE and runtime subject.
+            // Subject identity alone is not patch proof.
             $verdict = 'unknown';
-            $safeRationale = 'The source assessment claims a fixed build but has no resolvable patch evidence in this report.';
+            $safeRationale = 'The source assessment claims a fixed build without consistent verified patch status and citable patch evidence in this report.';
         }
 
         return match ($verdict) {
