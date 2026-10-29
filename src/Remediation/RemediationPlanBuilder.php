@@ -155,15 +155,20 @@ final class RemediationPlanBuilder
         }
         $cve = $parts[1];
         $validPatchEvidenceIds = [];
-        $assessmentBasisKey = 'advisory.' . $cve . '.' . $subjectId . '.assessment_basis';
+        // The producer uses an internal runtime target ID in advisory fact keys,
+        // which may differ from the public assessment subject_id for web workers.
+        $assessmentBasisPrefix = 'advisory.' . $cve . '.';
         $hasMatchingPatchBasis = false;
         foreach ($patchEvidenceIds as $evidenceId) {
             if (is_string($evidenceId) && isset($factsById[$evidenceId])) {
                 $validPatchEvidenceIds[] = $evidenceId;
-                // The producer includes runtime/package identity IDs in this list.
-                // Only a cited basis fact for this exact CVE and subject can
-                // substantiate the assessment; identities alone cannot.
-                if ($factsById[$evidenceId]['key'] === $assessmentBasisKey) {
+                // Identity IDs alone are not patch evidence. Require a
+                // referenced assessment-basis fact for this CVE. The basis
+                // uses the producer's internal target ID, not necessarily
+                // the subject ID exposed in the assessment record.
+                $key = $factsById[$evidenceId]['key'];
+                if (str_starts_with($key, $assessmentBasisPrefix)
+                    && str_ends_with($key, '.assessment_basis')) {
                     $hasMatchingPatchBasis = true;
                 }
             } elseif (is_string($evidenceId)) {
