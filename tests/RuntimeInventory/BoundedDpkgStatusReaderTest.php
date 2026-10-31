@@ -25,6 +25,9 @@ final class BoundedDpkgStatusReaderTest extends TestCase
         if (is_file($file) || is_link($file)) {
             unlink($file);
         }
+        if (is_file($this->root . '/commands.json')) {
+            unlink($this->root . '/commands.json');
+        }
         rmdir($this->root . '/var/lib/dpkg');
         rmdir($this->root . '/var/lib');
         rmdir($this->root . '/var');
