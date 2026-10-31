@@ -110,7 +110,7 @@ final class BoundedDpkgStatusReaderTest extends TestCase
 
         $this->assertCount(1, array_filter(
             $inventory['sources'],
-            static fn (array $source): bool => $source['locator'] === 'file:/var/lib/dpkg/status'
+            static fn(array $source): bool => $source['locator'] === 'file:/var/lib/dpkg/status'
                 && str_starts_with((string) $source['captured_digest'], 'sha256:'),
         ));
     }
