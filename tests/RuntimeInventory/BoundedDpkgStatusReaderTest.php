@@ -86,6 +86,49 @@ final class BoundedDpkgStatusReaderTest extends TestCase
         (new BoundedDpkgStatusReader($this->root))->observe();
     }
 
+    public function testBlockedPackageCommandExposesFileFactsWithoutVerifyingPackages(): void
+    {
+        file_put_contents($this->root . '/var/lib/dpkg/status', self::validStatus());
+        file_put_contents($this->root . '/commands.json', '{"commands":{}}');
+
+        $inventory = (new \voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector(
+            new \voku\PhpRuntimeAudit\RuntimeInventory\FixtureProcessRunner($this->root),
+            $this->root,
+            '2026-10-31T00:00:00Z',
+        ))->collect();
+
+        $facts = array_column($inventory['facts'], 'value', 'key');
+        self::assertSame('unknown', $facts['packages.state']);
+        self::assertSame('observed', $facts['packages.file_observation.state']);
+        self::assertSame(1, $facts['packages.file_observation.package_count']);
+        self::assertSame('php8.3-fpm', $facts['packages.file_observation.0.name']);
+        self::assertSame('8.3.6-0ubuntu0.24.04.13', $facts['packages.file_observation.0.version']);
+        self::assertSame([], $inventory['packages'], 'Local file facts cannot be promoted into verified runtime packages.');
+
+        $this->assertCount(1, array_filter(
+            $inventory['sources'],
+            static fn (array $source): bool => $source['locator'] === 'file:/var/lib/dpkg/status'
+                && str_starts_with((string) $source['captured_digest'], 'sha256:'),
+        ));
+    }
+
+    public function testMalformedStatusRemainsUnknownWhenPackageCommandIsBlocked(): void
+    {
+        file_put_contents($this->root . '/var/lib/dpkg/status', self::validStatus() . "\n" . self::validStatus());
+        file_put_contents($this->root . '/commands.json', '{"commands":{}}');
+
+        $inventory = (new \voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector(
+            new \voku\PhpRuntimeAudit\RuntimeInventory\FixtureProcessRunner($this->root),
+            $this->root,
+            '2026-10-31T00:00:00Z',
+        ))->collect();
+
+        $facts = array_column($inventory['facts'], 'value', 'key');
+        self::assertSame('unknown', $facts['packages.state']);
+        self::assertSame('unknown', $facts['packages.file_observation.state']);
+        self::assertSame([], $inventory['packages']);
+    }
+
     private static function validStatus(): string
     {
         return "Package: linux-image-generic\nStatus: install ok installed\nVersion: 6.8.0\n\n"
