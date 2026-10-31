@@ -17,6 +17,7 @@ final readonly class BoundedDpkgStatusReader
 {
     private const MAX_STATUS_BYTES = 8_388_608;
     private const MAX_PHP_PACKAGES = 256;
+    private const MAX_PHP_PACKAGE_NAME_BYTES = 128;
 
     public function __construct(private string $root) {}
 
@@ -113,6 +114,9 @@ final readonly class BoundedDpkgStatusReader
             $name = $fields['Package'] ?? '';
             if (preg_match('/\A(?:php(?:[0-9.]*(?:-[a-z0-9.+-]+)?)?|libapache2-mod-php[0-9.]*|mod_php[0-9.]*|php-main)\z/iD', $name) !== 1) {
                 continue;
+            }
+            if (strlen($name) > self::MAX_PHP_PACKAGE_NAME_BYTES) {
+                throw new RuntimeException('PHP package name exceeds bounded observation limit.');
             }
             if (isset($seen[$name])) {
                 throw new RuntimeException('Duplicate PHP package in dpkg status.');
