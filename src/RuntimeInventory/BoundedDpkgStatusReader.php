@@ -54,7 +54,7 @@ final readonly class BoundedDpkgStatusReader
             $closed = fstat($stream);
             $after = @lstat($path);
             if (!is_string($contents) || !$atEnd || strlen($contents) !== $opened['size']
-                || !is_array($after)
+                || !is_array($closed)
                 || !self::sameFile($opened, $closed) || !self::sameFile($opened, $after)) {
                 throw new RuntimeException('Dpkg status read was incomplete or changed.');
             }
