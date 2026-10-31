@@ -1,0 +1,61 @@
+name: Bounded dpkg real-host proof
+
+on:
+  pull_request:
+    paths:
+      - 'src/RuntimeInventory/**'
+      - 'tests/RuntimeInventory/**'
+      - 'tools/host-dogfood/assert-bounded-dpkg-on-real-host.php'
+      - '.github/workflows/bounded-dpkg-real-host.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu-fpm-denied-namespace:
+    # No privileged setup or user-controlled code on forks.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - name: Checkout exact PR head without stored credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Configure PHP 8.3
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          coverage: none
+      - name: Install production dependencies
+        run: composer install --no-dev --no-plugins --no-scripts --no-interaction --prefer-dist --no-progress
+      - name: Start actual distro FPM workers
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq php8.3-fpm > /dev/null
+          sudo service php8.3-fpm start
+          pgrep -x php-fpm8.3 > /dev/null
+      - name: Require denied unprivileged user and network namespaces
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if timeout 5s /usr/bin/setpriv --no-new-privs /usr/bin/unshare --user --map-root-user --net -- true > /dev/null 2>&1; then
+            echo "Namespace creation unexpectedly succeeded: this runner cannot prove the denial scenario." >&2
+            exit 1
+          fi
+          echo "Verified: namespace creation denied; executable package evidence must remain withheld."
+      - name: Assert real-host file-only observation does not promote patch claims
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          timeout 90s php tools/host-dogfood/assert-bounded-dpkg-on-real-host.php
+      - name: Stop ephemeral FPM service
+        if: always()
+        run: sudo service php8.3-fpm stop || true
