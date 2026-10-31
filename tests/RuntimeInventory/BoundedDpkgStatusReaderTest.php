@@ -55,6 +55,7 @@ final class BoundedDpkgStatusReaderTest extends TestCase
         yield 'duplicate version' => [str_replace('Version: 8.3.6-0ubuntu0.24.04.13', "Version: 8.3.6-0ubuntu0.24.04.13\nVersion: 8.3.7", $valid)];
         yield 'absent version' => [str_replace("Version: 8.3.6-0ubuntu0.24.04.13\n", '', $valid)];
         yield 'invalid version' => [str_replace('Version: 8.3.6-0ubuntu0.24.04.13', 'Version: /unsafe', $valid)];
+        yield 'unbounded php package name' => [str_replace('Package: php8.3-fpm', 'Package: php-' . str_repeat('a', 125), $valid)];
         yield 'unknown status' => [str_replace('Status: install ok installed', 'Status:', $valid)];
         yield 'malformed field' => [str_replace('Architecture: amd64', 'not a valid field', $valid)];
         yield 'nul byte' => [$valid . "\0"];
