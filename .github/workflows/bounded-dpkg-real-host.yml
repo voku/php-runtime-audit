@@ -46,8 +46,18 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          if timeout 5s /usr/bin/setpriv --no-new-privs /usr/bin/unshare --user --map-root-user --net -- true > /dev/null 2>&1; then
-            echo "Namespace creation unexpectedly succeeded: this runner cannot prove the denial scenario." >&2
+          command -v timeout > /dev/null
+          test -x /usr/bin/setpriv
+          test -x /usr/bin/unshare
+          /usr/bin/setpriv --no-new-privs /usr/bin/true
+          /usr/bin/unshare --version > /dev/null
+          set +e
+          LC_ALL=C timeout 5s /usr/bin/setpriv --no-new-privs /usr/bin/unshare --user --map-root-user --net -- true \
+            > "$RUNNER_TEMP/namespace-probe.stdout" 2> "$RUNNER_TEMP/namespace-probe.stderr"
+          probe_status=$?
+          set -e
+          if [[ "$probe_status" -ne 1 ]] || ! grep -Eq 'Operation not permitted|Permission denied' "$RUNNER_TEMP/namespace-probe.stderr"; then
+            echo "Namespace denial not established (probe exit $probe_status); refusing this proof." >&2
             exit 1
           fi
           echo "Verified: namespace creation denied; executable package evidence must remain withheld."

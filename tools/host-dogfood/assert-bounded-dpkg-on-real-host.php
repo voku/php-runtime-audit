@@ -66,7 +66,11 @@ foreach ($inventory['coverage'] as $entry) {
         $packageCoverageBlocked = true;
     }
 }
-if (!$packageCoverageBlocked || $inventory['workers'] === []) {
+$fpmWorkerSeen = array_filter(
+    $inventory['workers'],
+    static fn (array $worker): bool => $worker['kind'] === 'fpm',
+) !== [];
+if (!$packageCoverageBlocked || !$fpmWorkerSeen) {
     throw new RuntimeException('Expected blocked package coverage and actual running FPM workers.');
 }
 foreach ($inventory['workers'] as $worker) {

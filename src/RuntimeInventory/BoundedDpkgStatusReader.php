@@ -55,7 +55,7 @@ final readonly class BoundedDpkgStatusReader
             $closed = fstat($stream);
             $after = @lstat($path);
             if (!is_string($contents) || !$atEnd || strlen($contents) !== $opened['size']
-                || !is_array($closed)
+                || !is_array($closed) || !is_array($after)
                 || !self::sameFile($opened, $closed) || !self::sameFile($opened, $after)) {
                 throw new RuntimeException('Dpkg status read was incomplete or changed.');
             }
@@ -122,12 +122,20 @@ final readonly class BoundedDpkgStatusReader
                 throw new RuntimeException('Duplicate PHP package in dpkg status.');
             }
             $seen[$name] = true;
-            $version = $fields['Version'] ?? '';
-            if (preg_match('/\A[0-9][A-Za-z0-9.+:~_-]{0,127}\z/D', $version) !== 1
-                || !isset($fields['Status']) || $fields['Status'] === '') {
+            $status = $fields['Status'] ?? '';
+            if ($status === '') {
                 throw new RuntimeException('Malformed PHP package metadata.');
             }
-            if ($fields['Status'] !== 'install ok installed') {
+            // Dpkg can omit Version for not-installed and half-installed states.
+            // Neither state is authoritative installed-package evidence.
+            if (str_ends_with($status, ' not-installed') || str_ends_with($status, ' half-installed')) {
+                continue;
+            }
+            $version = $fields['Version'] ?? '';
+            if (preg_match('/\A[0-9][A-Za-z0-9.+:~_-]{0,127}\z/D', $version) !== 1) {
+                throw new RuntimeException('Malformed PHP package metadata.');
+            }
+            if ($status !== 'install ok installed') {
                 continue;
             }
             $packages[] = ['name' => $name, 'version' => $version];

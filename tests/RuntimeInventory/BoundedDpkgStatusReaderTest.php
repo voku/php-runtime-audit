@@ -47,6 +47,22 @@ final class BoundedDpkgStatusReaderTest extends TestCase
         ], $observation['packages']);
     }
 
+
+    public function testSkipsNotInstalledAndHalfInstalledWithoutVersion(): void
+    {
+        $contents = self::validStatus()
+            . "\nPackage: php8.5-cli\nStatus: deinstall ok not-installed\n\n"
+            . "Package: php8.4-fpm\nStatus: install reinstreq half-installed\n";
+        self::assertNotFalse(file_put_contents($this->root . '/var/lib/dpkg/status', $contents));
+
+        $observation = (new BoundedDpkgStatusReader($this->root))->observe();
+
+        self::assertSame([
+            ['name' => 'php8.3-fpm', 'version' => '8.3.6-0ubuntu0.24.04.13'],
+        ], $observation['packages']);
+        self::assertSame($contents, $observation['content']);
+    }
+
     /** @return iterable<string, array{string}> */
     public static function malformedStatus(): iterable
     {
@@ -54,6 +70,7 @@ final class BoundedDpkgStatusReaderTest extends TestCase
         yield 'duplicate PHP stanza' => [$valid . "\n" . $valid];
         yield 'duplicate version' => [str_replace('Version: 8.3.6-0ubuntu0.24.04.13', "Version: 8.3.6-0ubuntu0.24.04.13\nVersion: 8.3.7", $valid)];
         yield 'absent version' => [str_replace("Version: 8.3.6-0ubuntu0.24.04.13\n", '', $valid)];
+        yield 'config-files without version' => [str_replace("Version: 8.2.1\n", '', $valid)];
         yield 'invalid version' => [str_replace('Version: 8.3.6-0ubuntu0.24.04.13', 'Version: /unsafe', $valid)];
         yield 'unbounded php package name' => [str_replace('Package: php8.3-fpm', 'Package: php-' . str_repeat('a', 125), $valid)];
         yield 'unknown status' => [str_replace('Status: install ok installed', 'Status:', $valid)];
