@@ -542,6 +542,25 @@ final class RuntimeInventoryCollector
 
         $result = $this->processResults[$command->id()] ?? null;
         if ($result === null || !$result->succeeded()) {
+            // A failed/blocked command cannot prove a package is installed or loaded.
+            // Retain independently bounded, local-file-only facts for diagnosis without
+            // feeding them into worker provenance or changing the unknown verdict.
+            if ($manager === 'dpkg') {
+                try {
+                    $observation = (new BoundedDpkgStatusReader($this->rootRealPath))->observe();
+                    $fileSource = $this->addSource('package_database', 'file:/var/lib/dpkg/status', $observation['content']);
+                    $this->addFact('packages.file_observation.state', 'observed', $fileSource);
+                    $this->addFact('packages.file_observation.package_count', count($observation['packages']), $fileSource);
+                    foreach ($observation['packages'] as $index => $package) {
+                        $this->addFact('packages.file_observation.' . $index . '.name', $package['name'], $fileSource);
+                        $this->addFact('packages.file_observation.' . $index . '.version', $package['version'], $fileSource);
+                    }
+                } catch (\RuntimeException $exception) {
+                    $fileSource = $this->addSource('package_database', 'file:/var/lib/dpkg/status', null);
+                    $this->addFact('packages.file_observation.state', 'unknown', $fileSource);
+                    $this->addFact('packages.file_observation.reason', $exception->getMessage(), $fileSource);
+                }
+            }
             $source = $this->sourceIdFor('argv:' . $command->id());
             $this->addFact('packages.manager', $manager, $source);
             $this->addFact('packages.state', 'unknown', $source);
