@@ -53,8 +53,7 @@ final readonly class BoundedDpkgStatusReader
             $contents = stream_get_contents($stream, self::MAX_STATUS_BYTES + 1);
             $atEnd = feof($stream);
             $closed = fstat($stream);
-            // A vanished status path is an invalid observation, never a TypeError.
-            $after = @lstat($path) ?: [];
+            $after = self::statAfterRead($path);
             if (!is_string($contents) || !$atEnd || strlen($contents) !== $opened['size']
                 || !is_array($closed)
                 || !self::sameFile($opened, $closed) || !self::sameFile($opened, $after)) {
@@ -68,6 +67,22 @@ final readonly class BoundedDpkgStatusReader
             'content' => $contents,
             'packages' => self::parseInstalledPhpPackages($contents),
         ];
+    }
+
+    /**
+     * Recheck the path after reading: a failed lstat must remain a bounded
+     * unknown observation, not escape the inventory collector as TypeError.
+     *
+     * @return array<string|int, int>
+     */
+    private static function statAfterRead(string $path): array
+    {
+        $metadata = @lstat($path);
+        if (!is_array($metadata)) {
+            throw new RuntimeException('Dpkg status read was incomplete or changed.');
+        }
+
+        return $metadata;
     }
 
     /**
