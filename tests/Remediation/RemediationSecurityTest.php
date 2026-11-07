@@ -99,6 +99,35 @@ final class RemediationSecurityTest extends TestCase
         self::assertStringContainsString('no resolvable patch evidence', $haystack, 'A verified_fixed claim without citable patch facts must become unknown, not a no-action recommendation.');
     }
 
+    public function test_verified_fixed_requires_a_populated_assessment_basis_fact(): void
+    {
+        $subjectId = 'cli-aaaa';
+        $basisKey = 'advisory.CVE-2026-109618.' . $subjectId . '.assessment_basis';
+        $assessment = [
+            'record_type' => 'assessment',
+            'record_id' => 'assessment:CVE-2026-109618:' . $subjectId,
+            'subject_id' => $subjectId,
+            'verdict' => 'verified_fixed',
+            'patch_status' => 'verified_fixed',
+            'rationale' => 'claims fixed',
+            'patch_evidence_ids' => ['fact.basis.1'],
+        ];
+
+        // A matching citation key with no usable basis payload is not patch proof.
+        foreach ([null, [], ['reason' => 'missing advisory provenance']] as $invalidBasis) {
+            $report = $this->baseReport([
+                ['fact_id' => 'fact.basis.1', 'key' => $basisKey, 'value' => $invalidBasis, 'source_id' => 's1'],
+            ], [$assessment]);
+
+            $plan = (new RemediationPlanBuilder())->build($report);
+
+            self::assertCount(1, $plan->actions);
+            self::assertSame(RemediationActionKind::InvestigateUnknownSubject, $plan->actions[0]->kind);
+            self::assertStringContainsString('no resolvable patch evidence', implode(' ', $plan->warnings));
+            self::assertFalse($plan->toArray()['automatic_apply']);
+        }
+    }
+
     public function test_hostile_rationale_text_cannot_alter_markdown_structure_or_inject_control_bytes(): void
     {
         $hostileRationale = "Fine.\x07\x1B[31m*bold*](javascript:alert(1)) ```\x00 \r\n\r\n# New heading\nrm -rf /; \$(whoami) \`id\`";
