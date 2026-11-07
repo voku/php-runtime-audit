@@ -167,7 +167,19 @@ final class RemediationPlanBuilder
                 // Identity facts and another subject's advisory facts
                 // are not evidence that this particular runtime is fixed.
                 if ($factsById[$evidenceId]['key'] === $assessmentBasisKey) {
-                    $hasMatchingPatchBasis = true;
+                    $basisValue = $factsById[$evidenceId]['value'];
+                    if ($basisValue instanceof \stdClass) {
+                        $basisValue = get_object_vars($basisValue);
+                    }
+                    // A citation with the right key but no advisory source or
+                    // assessment rationale is not a usable patch basis.
+                    if (is_array($basisValue)
+                        && is_string($basisValue['source_url'] ?? null)
+                        && $basisValue['source_url'] !== ''
+                        && is_string($basisValue['reason'] ?? null)
+                        && $basisValue['reason'] !== '') {
+                        $hasMatchingPatchBasis = true;
+                    }
                 }
             } elseif (is_string($evidenceId)) {
                 $warnings[] = sprintf('%s cites evidence_id "%s" that does not match any fact in this report; it was dropped.', $cve, SafeText::plain($evidenceId, 64));
