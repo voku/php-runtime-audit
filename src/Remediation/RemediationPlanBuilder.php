@@ -174,10 +174,8 @@ final class RemediationPlanBuilder
                     // A matching key with only blank provenance or rationale is
                     // not usable evidence that this particular subject is fixed.
                     if (is_array($basisValue)
-                        && is_string($basisValue['source_url'] ?? null)
-                        && trim($basisValue['source_url']) !== ''
-                        && is_string($basisValue['reason'] ?? null)
-                        && trim($basisValue['reason']) !== '') {
+                        && self::hasVisibleText($basisValue['source_url'] ?? null)
+                        && self::hasVisibleText($basisValue['reason'] ?? null)) {
                         $hasMatchingPatchBasis = true;
                     }
                 }
@@ -323,6 +321,15 @@ final class RemediationPlanBuilder
                 ),
             default => $this->recordUnsupportedVerdict($warnings, $cve),
         };
+    }
+
+    /**
+     * Exclude whitespace, control, and invisible format characters from cited basis text.
+     * Invalid UTF-8 also fails closed rather than counting as usable evidence.
+     */
+    private static function hasVisibleText(mixed $value): bool
+    {
+        return is_string($value) && preg_match('/[\\p{L}\\p{N}\\p{P}\\p{S}]/u', $value) === 1;
     }
 
     /**
