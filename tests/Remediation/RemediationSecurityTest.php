@@ -114,7 +114,19 @@ final class RemediationSecurityTest extends TestCase
         ];
 
         // A matching citation key with no usable basis payload is not patch proof.
-        foreach ([null, [], ['reason' => 'missing advisory provenance']] as $invalidBasis) {
+        foreach ([
+            null,
+            [],
+            ['reason' => 'missing advisory provenance'],
+            ['source_url' => 'https://example.org/advisory'],
+            ['source_url' => '', 'reason' => 'fixed by vendor'],
+            ['source_url' => 'https://example.org/advisory', 'reason' => ''],
+            ['source_url' => " \t\n", 'reason' => 'fixed by vendor'],
+            ['source_url' => 'https://example.org/advisory', 'reason' => " \t\n"],
+            ['source_url' => 42, 'reason' => 'fixed by vendor'],
+            ['source_url' => 'https://example.org/advisory', 'reason' => false],
+            (object) ['source_url' => " \t\n", 'reason' => 'fixed by vendor'],
+        ] as $invalidBasis) {
             $report = $this->baseReport([
                 ['fact_id' => 'fact.basis.1', 'key' => $basisKey, 'value' => $invalidBasis, 'source_id' => 's1'],
             ], [$assessment]);
@@ -124,6 +136,35 @@ final class RemediationSecurityTest extends TestCase
             self::assertCount(1, $plan->actions);
             self::assertSame(RemediationActionKind::InvestigateUnknownSubject, $plan->actions[0]->kind);
             self::assertStringContainsString('no resolvable patch evidence', implode(' ', $plan->warnings));
+            self::assertFalse($plan->toArray()['automatic_apply']);
+        }
+    }
+
+    public function test_verified_fixed_accepts_a_nonblank_assessment_basis_in_array_and_object_form(): void
+    {
+        $subjectId = 'cli-aaaa';
+        $basisKey = 'advisory.CVE-2026-109618.' . $subjectId . '.assessment_basis';
+        $assessment = [
+            'record_type' => 'assessment',
+            'record_id' => 'assessment:CVE-2026-109618:' . $subjectId,
+            'subject_id' => $subjectId,
+            'verdict' => 'verified_fixed',
+            'patch_status' => 'verified_fixed',
+            'rationale' => 'fixed by vendor',
+            'patch_evidence_ids' => ['fact.basis.1'],
+        ];
+        $validBasis = ['source_url' => 'https://example.org/advisory', 'reason' => 'fixed by vendor'];
+
+        foreach ([$validBasis, (object) $validBasis] as $basis) {
+            $report = $this->baseReport([
+                ['fact_id' => 'fact.basis.1', 'key' => $basisKey, 'value' => $basis, 'source_id' => 's1'],
+            ], [$assessment]);
+
+            $plan = (new RemediationPlanBuilder())->build($report);
+
+            self::assertCount(1, $plan->actions);
+            self::assertSame(RemediationActionKind::NoActionRequired, $plan->actions[0]->kind);
+            self::assertSame([], $plan->warnings);
             self::assertFalse($plan->toArray()['automatic_apply']);
         }
     }
