@@ -40,7 +40,9 @@ jobs:
         run: |
           set -euo pipefail
           find src bin -type f -name '*.php' -print0 | xargs -0 -r -n1 php -l
-          php bin/php-runtime-audit --help
+          printf '%s\n' '{"intent":"runtime-patch","facts":{}}' \
+            | php bin/php-runtime-audit \
+            | php -r '$result = json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR); if (!is_array($result["profile_context"] ?? null)) { fwrite(STDERR, "Profile context missing.\n"); exit(1); }'
 
   php-quality:
     name: PHP ${{ matrix.php }} / tests + PHPStan + formatting
