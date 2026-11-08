@@ -1,0 +1,50 @@
+name: Remediation security and PHP quality
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'composer.json'
+      - 'composer.lock'
+      - '.github/workflows/remediation-ci.yml'
+  push:
+    branches:
+      - main
+      - test/pra4-basis-payload-evidence-r1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  php-quality:
+    name: PHP ${{ matrix.php }} / tests + PHPStan + formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.3', '8.4', '8.5']
+    steps:
+      - name: Checkout exact change
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: composer:v2
+          coverage: none
+      - name: Validate Composer metadata
+        run: composer validate --no-check-publish
+      - name: Install development dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+      - name: Run PHPUnit security and integration tests
+        run: composer test
+      - name: Run maximum-level PHPStan
+        run: composer analyse
+      - name: Run PHP-CS-Fixer in check-only mode
+        run: composer format-check
