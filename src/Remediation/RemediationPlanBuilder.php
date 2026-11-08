@@ -171,13 +171,13 @@ final class RemediationPlanBuilder
                     if ($basisValue instanceof \stdClass) {
                         $basisValue = get_object_vars($basisValue);
                     }
-                    // A citation with the right key but no advisory source or
-                    // assessment rationale is not a usable patch basis.
+                    // A matching key with only blank provenance or rationale is
+                    // not usable evidence that this particular subject is fixed.
                     if (is_array($basisValue)
                         && is_string($basisValue['source_url'] ?? null)
-                        && $basisValue['source_url'] !== ''
+                        && trim($basisValue['source_url']) !== ''
                         && is_string($basisValue['reason'] ?? null)
-                        && $basisValue['reason'] !== '') {
+                        && trim($basisValue['reason']) !== '') {
                         $hasMatchingPatchBasis = true;
                     }
                 }
