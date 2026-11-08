@@ -123,6 +123,8 @@ final class RemediationSecurityTest extends TestCase
             ['source_url' => 'https://example.org/advisory', 'reason' => ''],
             ['source_url' => " \t\n", 'reason' => 'fixed by vendor'],
             ['source_url' => 'https://example.org/advisory', 'reason' => " \t\n"],
+            ['source_url' => "\u{00A0}", 'reason' => 'fixed by vendor'],
+            ['source_url' => 'https://example.org/advisory', 'reason' => "\u{200B}"],
             ['source_url' => 42, 'reason' => 'fixed by vendor'],
             ['source_url' => 'https://example.org/advisory', 'reason' => false],
             (object) ['source_url' => " \t\n", 'reason' => 'fixed by vendor'],
