@@ -11,7 +11,6 @@ on:
   push:
     branches:
       - main
-      - test/pra4-basis-payload-evidence-r1
   workflow_dispatch:
 
 permissions:
