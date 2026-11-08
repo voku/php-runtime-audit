@@ -174,7 +174,7 @@ final class RemediationPlanBuilder
                     // A matching key with only blank provenance or rationale is
                     // not usable evidence that this particular subject is fixed.
                     if (is_array($basisValue)
-                        && self::hasVisibleText($basisValue['source_url'] ?? null)
+                        && self::hasAdvisoryUrl($basisValue['source_url'] ?? null)
                         && self::hasVisibleText($basisValue['reason'] ?? null)) {
                         $hasMatchingPatchBasis = true;
                     }
@@ -321,6 +321,32 @@ final class RemediationPlanBuilder
                 ),
             default => $this->recordUnsupportedVerdict($warnings, $cve),
         };
+    }
+
+    /**
+     * Validate an advisory URL as a citation, not as proof of its contents.
+     * Reject local/non-web schemes and embedded credentials in untrusted reports.
+     */
+    private static function hasAdvisoryUrl(mixed $value): bool
+    {
+        if (!is_string($value) || filter_var($value, FILTER_VALIDATE_URL) === false) {
+            return false;
+        }
+
+        $parts = parse_url($value);
+        if (!is_array($parts)) {
+            return false;
+        }
+
+        $scheme = $parts['scheme'] ?? null;
+        $host = $parts['host'] ?? null;
+
+        return is_string($scheme)
+            && in_array(strtolower($scheme), ['http', 'https'], true)
+            && is_string($host)
+            && $host !== ''
+            && !isset($parts['user'])
+            && !isset($parts['pass']);
     }
 
     /**
