@@ -329,7 +329,7 @@ final class RemediationPlanBuilder
      */
     private static function hasVisibleText(mixed $value): bool
     {
-        return is_string($value) && preg_match('/[\\p{L}\\p{N}\\p{P}\\p{S}]/u', $value) === 1;
+        return is_string($value) && preg_match('/[\p{L}\p{N}\p{P}\p{S}]/u', $value) === 1;
     }
 
     /**
