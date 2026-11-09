@@ -9,7 +9,6 @@ on:
     paths:
       - '.github/workflows/stack-host-proof.yml'
       - 'tools/host-dogfood/**'
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,8 +17,8 @@ jobs:
   ubuntu-fpm:
     # Never run potentially privileged setup on an untrusted fork head.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'push' && github.ref == 'refs/heads/ci/pra4-current-host-20261109') ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 18
     steps:
