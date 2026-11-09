@@ -188,6 +188,50 @@ final class RemediationSecurityTest extends TestCase
         }
     }
 
+    public function test_conflicting_assessment_basis_facts_cannot_produce_no_action_required(): void
+    {
+        $cve = 'CVE-2026-109618';
+        $subjectId = 'cli-aaaa';
+        $basisKey = 'advisory.' . $cve . '.' . $subjectId . '.assessment_basis';
+
+        // Even when the assessment cites the apparently valid first fact, the
+        // same key has a contradictory source in this untrusted report.
+        $report = $this->baseReport([
+            [
+                'fact_id' => 'fact.basis.good',
+                'key' => $basisKey,
+                'value' => [
+                    'source_url' => 'https://security-tracker.debian.org/tracker/CVE-2026-109618',
+                    'reason' => 'vendor fixed build',
+                ],
+                'source_id' => 's1',
+            ],
+            [
+                'fact_id' => 'fact.basis.conflict',
+                'key' => $basisKey,
+                'value' => [
+                    'source_url' => 'https://example.org/unrelated',
+                    'reason' => 'conflicting basis',
+                ],
+                'source_id' => 's2',
+            ],
+        ], [[
+            'record_type' => 'assessment',
+            'record_id' => 'assessment:' . $cve . ':' . $subjectId,
+            'subject_id' => $subjectId,
+            'verdict' => 'verified_fixed',
+            'patch_status' => 'verified_fixed',
+            'rationale' => 'fixed by vendor',
+            'patch_evidence_ids' => ['fact.basis.good'],
+        ]]);
+
+        $plan = (new RemediationPlanBuilder())->build($report);
+
+        self::assertCount(1, $plan->actions);
+        self::assertSame(RemediationActionKind::InvestigateUnknownSubject, $plan->actions[0]->kind);
+        self::assertStringContainsString('conflicting assessment basis', implode(' ', $plan->warnings));
+    }
+
     public function test_verified_fixed_accepts_a_nonblank_assessment_basis_in_array_and_object_form(): void
     {
         $subjectId = 'cli-aaaa';
