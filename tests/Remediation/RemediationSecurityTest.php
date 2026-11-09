@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace voku\PhpRuntimeAudit\Tests\Remediation;
 
 use PHPUnit\Framework\TestCase;
+use voku\PhpRuntimeAudit\Advisories\AdvisoryCatalog;
 use voku\PhpRuntimeAudit\Remediation\RemediationActionKind;
 use voku\PhpRuntimeAudit\Remediation\RemediationPlanBuilder;
 use voku\PhpRuntimeAudit\Remediation\RemediationReportMarkdownRenderer;
@@ -165,6 +166,7 @@ final class RemediationSecurityTest extends TestCase
         foreach ([
             'https://example.org/advisory',
             'https://security-tracker.debian.org/tracker/CVE-2026-109619',
+            'https://www.php.net/archive/2026.php#2026-10-21-5',
         ] as $unrelatedUrl) {
             $report = $this->baseReport([[
                 'fact_id' => 'fact.basis.1',
@@ -199,7 +201,15 @@ final class RemediationSecurityTest extends TestCase
             'rationale' => 'fixed by vendor',
             'patch_evidence_ids' => ['fact.basis.1'],
         ];
-        $validBasis = ['source_url' => 'https://example.org/advisory', 'reason' => 'fixed by vendor'];
+        $vendorUrl = null;
+        foreach (AdvisoryCatalog::load()->advisories as $advisory) {
+            if ($advisory['cve'] === 'CVE-2026-109618') {
+                $vendorUrl = $advisory['vendor_rules'][0]['source_url'] ?? null;
+                break;
+            }
+        }
+        self::assertIsString($vendorUrl, 'The fixture requires a sourced fixed-version vendor rule.');
+        $validBasis = ['source_url' => $vendorUrl, 'reason' => 'fixed by vendor'];
 
         foreach ([$validBasis, (object) $validBasis] as $basis) {
             $report = $this->baseReport([
