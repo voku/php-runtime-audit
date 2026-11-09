@@ -232,6 +232,50 @@ final class RemediationSecurityTest extends TestCase
         self::assertStringContainsString('conflicting assessment basis', implode(' ', $plan->warnings));
     }
 
+    public function test_duplicate_fact_id_cannot_authorize_a_fixed_verdict(): void
+    {
+        $cve = 'CVE-2026-109618';
+        $subjectId = 'cli-aaaa';
+        $vendorUrl = null;
+        foreach (AdvisoryCatalog::load()->advisories as $advisory) {
+            if ($advisory['cve'] === $cve) {
+                $vendorUrl = $advisory['vendor_rules'][0]['source_url'] ?? null;
+                break;
+            }
+        }
+        self::assertIsString($vendorUrl);
+
+        $report = $this->baseReport([
+            [
+                'fact_id' => 'fact.duplicated',
+                'key' => 'advisory.' . $cve . '.' . $subjectId . '.assessment_basis',
+                'value' => ['source_url' => $vendorUrl, 'reason' => 'fixed by vendor'],
+                'source_id' => 's1',
+            ],
+            [
+                'fact_id' => 'fact.duplicated',
+                'key' => 'advisory.' . $cve . '.' . $subjectId . '.assessment_basis',
+                'value' => ['source_url' => 'https://example.org/contradiction', 'reason' => 'not fixed'],
+                'source_id' => 's2',
+            ],
+        ], [[
+            'record_type' => 'assessment',
+            'record_id' => 'assessment:' . $cve . ':' . $subjectId,
+            'subject_id' => $subjectId,
+            'verdict' => 'verified_fixed',
+            'patch_status' => 'verified_fixed',
+            'rationale' => 'fixed by vendor',
+            'patch_evidence_ids' => ['fact.duplicated'],
+        ]]);
+
+        $plan = (new RemediationPlanBuilder())->build($report);
+
+        self::assertCount(1, $plan->actions);
+        self::assertSame(RemediationActionKind::InvestigateUnknownSubject, $plan->actions[0]->kind);
+        self::assertStringContainsString('duplicate fact_id', implode(' ', $plan->warnings));
+        self::assertFalse($plan->toArray()['automatic_apply']);
+    }
+
     public function test_verified_fixed_accepts_a_nonblank_assessment_basis_in_array_and_object_form(): void
     {
         $subjectId = 'cli-aaaa';
