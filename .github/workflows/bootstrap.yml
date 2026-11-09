@@ -47,6 +47,8 @@ jobs:
           php -r '
             $config = json_decode(file_get_contents("renovate.json"), true, 512, JSON_THROW_ON_ERROR);
             if (!is_array($config)
+                // Deny extra keys, including nested packageRules that could override automerge.
+                || count($config) !== 5
                 || ($config["$" . "schema"] ?? null) !== "https://docs.renovatebot.com/renovate-schema.json"
                 || ($config["extends"] ?? null) !== ["config:recommended"]
                 || ($config["automerge"] ?? null) !== false

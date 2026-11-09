@@ -63,6 +63,22 @@ final class BoundedDpkgStatusReaderTest extends TestCase
         self::assertSame($contents, $observation['content']);
     }
 
+    public function testObservesHeldPackagesButExcludesUnselectedOrBrokenStates(): void
+    {
+        $contents = "Package: php8.3-fpm\nStatus: hold ok installed\nVersion: 8.3.6\n\n"
+            . "Package: php8.4-cli\nStatus: deinstall ok installed\nVersion: 8.4.1\n\n"
+            . "Package: php8.5-cli\nStatus: install reinstreq installed\nVersion: 8.5.0\n\n"
+            . "Package: php8.2-fpm\nStatus: hold ok unpacked\nVersion: 8.2.30\n";
+        self::assertNotFalse(file_put_contents($this->root . '/var/lib/dpkg/status', $contents));
+
+        $observation = (new BoundedDpkgStatusReader($this->root))->observe();
+
+        self::assertSame([
+            ['name' => 'php8.3-fpm', 'version' => '8.3.6'],
+        ], $observation['packages']);
+        self::assertSame($contents, $observation['content']);
+    }
+
     /** @return iterable<string, array{string}> */
     public static function malformedStatus(): iterable
     {

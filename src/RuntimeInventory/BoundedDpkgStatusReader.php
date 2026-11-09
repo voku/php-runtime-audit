@@ -151,7 +151,7 @@ final readonly class BoundedDpkgStatusReader
             if (preg_match('/\A[0-9][A-Za-z0-9.+:~_-]{0,127}\z/D', $version) !== 1) {
                 throw new RuntimeException('Malformed PHP package metadata.');
             }
-            if ($status !== 'install ok installed') {
+            if (!in_array($status, ['install ok installed', 'hold ok installed'], true)) {
                 continue;
             }
             $packages[] = ['name' => $name, 'version' => $version];
