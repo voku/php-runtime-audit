@@ -155,6 +155,7 @@ final class RemediationPlanBuilder
             return null;
         }
         $cve = $parts[1];
+        $advisory = $advisoriesByCve[$cve] ?? null;
         $validPatchEvidenceIds = [];
         // The producer keys each assessment basis by this assessment's
         // subject_id (also used as its target ID), including web workers.
@@ -174,7 +175,7 @@ final class RemediationPlanBuilder
                     // A matching key with only blank provenance or rationale is
                     // not usable evidence that this particular subject is fixed.
                     if (is_array($basisValue)
-                        && self::hasAdvisoryUrl($basisValue['source_url'] ?? null)
+                        && self::hasCveVendorAdvisoryUrl($basisValue['source_url'] ?? null, $advisory)
                         && self::hasVisibleText($basisValue['reason'] ?? null)) {
                         $hasMatchingPatchBasis = true;
                     }
@@ -192,7 +193,6 @@ final class RemediationPlanBuilder
             $validEvidenceIds = array_values(array_unique([...$validEvidenceIds, ...$configurationEvidenceIds]));
         }
 
-        $advisory = $advisoriesByCve[$cve] ?? null;
         $advisoryTitle = $advisory !== null ? SafeText::plain($advisory['title']) : 'Advisory not found in the loaded catalog';
         $sourceNote = $advisory !== null ? sprintf(' See the advisory source for the authoritative fixed version: %s', $advisory['source_url']) : '';
 
@@ -347,6 +347,28 @@ final class RemediationPlanBuilder
             && $host !== ''
             && !isset($parts['user'])
             && !isset($parts['pass']);
+    }
+
+    /**
+     * A syntactically valid URL is not patch provenance. Only a sourced
+     * vendor-specific fixed-version rule for the assessed CVE may support a
+     * fixed verdict. An upstream announcement alone is not vendor proof.
+     *
+     * @phpstan-param AdvisoryDefinition|null $advisory
+     */
+    private static function hasCveVendorAdvisoryUrl(mixed $value, ?array $advisory): bool
+    {
+        if ($advisory === null || !self::hasAdvisoryUrl($value)) {
+            return false;
+        }
+
+        foreach ($advisory['vendor_rules'] as $rule) {
+            if ($rule['source_url'] === $value) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
