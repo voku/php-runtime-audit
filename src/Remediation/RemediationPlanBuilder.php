@@ -43,8 +43,15 @@ final class RemediationPlanBuilder
         $facts = $this->extractFacts($records, $warnings);
         $factsById = [];
         $factsByKey = [];
+        /** @var array<string, true> $duplicateAssessmentBasisKeys */
+        $duplicateAssessmentBasisKeys = [];
         foreach ($facts as $fact) {
             $factsById[$fact['fact_id']] = $fact;
+            if (str_ends_with($fact['key'], '.assessment_basis') && isset($factsByKey[$fact['key']])) {
+                // Two observations claiming one security basis make its
+                // provenance ambiguous, even when only one fact was cited.
+                $duplicateAssessmentBasisKeys[$fact['key']] = true;
+            }
             $factsByKey[$fact['key']] = $fact;
         }
         $advisoriesByCve = [];
@@ -58,7 +65,7 @@ final class RemediationPlanBuilder
                 continue;
             }
             /** @var array<string, mixed> $record */
-            $action = $this->buildAction($record, $factsById, $factsByKey, $advisoriesByCve, $warnings);
+            $action = $this->buildAction($record, $factsById, $factsByKey, $duplicateAssessmentBasisKeys, $advisoriesByCve, $warnings);
             if ($action !== null) {
                 $actions[] = $action;
             }
@@ -130,10 +137,11 @@ final class RemediationPlanBuilder
      * @param array<string, mixed> $record
      * @param array<string, ReportFact> $factsById
      * @param array<string, ReportFact> $factsByKey
+     * @param array<string, true> $duplicateAssessmentBasisKeys
      * @phpstan-param array<string, AdvisoryDefinition> $advisoriesByCve
      * @param list<string> $warnings
      */
-    private function buildAction(array $record, array $factsById, array $factsByKey, array $advisoriesByCve, array &$warnings): ?RemediationAction
+    private function buildAction(array $record, array $factsById, array $factsByKey, array $duplicateAssessmentBasisKeys, array $advisoriesByCve, array &$warnings): ?RemediationAction
     {
         $recordId = $record['record_id'] ?? null;
         $subjectId = $record['subject_id'] ?? null;
@@ -183,6 +191,15 @@ final class RemediationPlanBuilder
             } elseif (is_string($evidenceId)) {
                 $warnings[] = sprintf('%s cites evidence_id "%s" that does not match any fact in this report; it was dropped.', $cve, SafeText::plain($evidenceId, 64));
             }
+        }
+
+        if (isset($duplicateAssessmentBasisKeys[$assessmentBasisKey])) {
+            $warnings[] = sprintf(
+                '%s has conflicting assessment basis facts for %s; the fixed verdict cannot be trusted.',
+                $cve,
+                SafeText::plain($subjectId, 64),
+            );
+            $hasMatchingPatchBasis = false;
         }
 
         $identity = SubjectIdentity::resolveIndexed($factsByKey, $subjectId);
