@@ -40,7 +40,9 @@ final class RemediationPlanBuilder
             return new RemediationPlan(gmdate('Y-m-d\TH:i:s\Z'), null, [], ['The report has no usable records array; no proposals could be built.']);
         }
 
-        $facts = $this->extractFacts($records, $warnings);
+        /** @var array<string, true> $duplicateFactIds */
+        $duplicateFactIds = [];
+        $facts = $this->extractFacts($records, $warnings, $duplicateFactIds);
         $factsById = [];
         $factsByKey = [];
         /** @var array<string, true> $duplicateAssessmentBasisKeys */
@@ -65,7 +67,7 @@ final class RemediationPlanBuilder
                 continue;
             }
             /** @var array<string, mixed> $record */
-            $action = $this->buildAction($record, $factsById, $factsByKey, $duplicateAssessmentBasisKeys, $advisoriesByCve, $warnings);
+            $action = $this->buildAction($record, $factsById, $factsByKey, $duplicateAssessmentBasisKeys, $duplicateFactIds, $advisoriesByCve, $warnings);
             if ($action !== null) {
                 $actions[] = $action;
             }
@@ -85,9 +87,10 @@ final class RemediationPlanBuilder
     /**
      * @param list<mixed> $records
      * @param list<string> $warnings
+     * @param array<string, true> $duplicateFactIds
      * @phpstan-return list<ReportFact>
      */
-    private function extractFacts(array $records, array &$warnings): array
+    private function extractFacts(array $records, array &$warnings, array &$duplicateFactIds): array
     {
         $foundObservation = false;
         $facts = [];
@@ -109,6 +112,9 @@ final class RemediationPlanBuilder
                     continue;
                 }
                 if (isset($seenFactIds[$fact['fact_id']])) {
+                    // Duplicate identifiers make citations ambiguous even if the
+                    // first observation appears valid. Never silently trust it.
+                    $duplicateFactIds[$fact['fact_id']] = true;
                     continue;
                 }
                 if (count($facts) >= self::MAX_FACTS) {
@@ -138,10 +144,11 @@ final class RemediationPlanBuilder
      * @param array<string, ReportFact> $factsById
      * @param array<string, ReportFact> $factsByKey
      * @param array<string, true> $duplicateAssessmentBasisKeys
+     * @param array<string, true> $duplicateFactIds
      * @phpstan-param array<string, AdvisoryDefinition> $advisoriesByCve
      * @param list<string> $warnings
      */
-    private function buildAction(array $record, array $factsById, array $factsByKey, array $duplicateAssessmentBasisKeys, array $advisoriesByCve, array &$warnings): ?RemediationAction
+    private function buildAction(array $record, array $factsById, array $factsByKey, array $duplicateAssessmentBasisKeys, array $duplicateFactIds, array $advisoriesByCve, array &$warnings): ?RemediationAction
     {
         $recordId = $record['record_id'] ?? null;
         $subjectId = $record['subject_id'] ?? null;
@@ -175,7 +182,7 @@ final class RemediationPlanBuilder
                 $validPatchEvidenceIds[] = $evidenceId;
                 // Identity facts and another subject's advisory facts
                 // are not evidence that this particular runtime is fixed.
-                if ($factsById[$evidenceId]['key'] === $assessmentBasisKey) {
+                if ($factsById[$evidenceId]['key'] === $assessmentBasisKey && !isset($duplicateFactIds[$evidenceId])) {
                     $basisValue = $factsById[$evidenceId]['value'];
                     if ($basisValue instanceof \stdClass) {
                         $basisValue = get_object_vars($basisValue);
@@ -190,6 +197,12 @@ final class RemediationPlanBuilder
                 }
             } elseif (is_string($evidenceId)) {
                 $warnings[] = sprintf('%s cites evidence_id "%s" that does not match any fact in this report; it was dropped.', $cve, SafeText::plain($evidenceId, 64));
+            }
+        }
+
+        foreach ($patchEvidenceIds as $evidenceId) {
+            if (is_string($evidenceId) && isset($duplicateFactIds[$evidenceId])) {
+                $warnings[] = sprintf('%s cites duplicate fact_id "%s"; its patch evidence is ambiguous.', $cve, SafeText::plain($evidenceId, 64));
             }
         }
 
