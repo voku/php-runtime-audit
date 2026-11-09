@@ -149,6 +149,28 @@ final class BoundedDpkgStatusReaderTest extends TestCase
         ));
     }
 
+    public function testHeldPackageRemainsDiagnosticWhenDpkgCommandIsBlocked(): void
+    {
+        $contents = "Package: php8.3-fpm\nStatus: hold ok installed\nVersion: 8.3.6\n";
+        self::assertNotFalse(file_put_contents($this->root . '/var/lib/dpkg/status', $contents));
+        self::assertNotFalse(file_put_contents($this->root . '/commands.json', '{"commands":{}}'));
+
+        $inventory = (new \voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector(
+            new \voku\PhpRuntimeAudit\RuntimeInventory\FixtureProcessRunner($this->root),
+            $this->root,
+            '2026-10-31T00:00:00Z',
+        ))->collect();
+
+        $facts = array_column($inventory['facts'], 'value', 'key');
+        self::assertSame('unknown', $inventory['package_inventory_state']);
+        self::assertSame('unknown', $facts['packages.state']);
+        self::assertSame([], $inventory['packages']);
+        self::assertSame('observed', $facts['packages.file_observation.state']);
+        self::assertSame(1, $facts['packages.file_observation.package_count']);
+        self::assertSame('php8.3-fpm', $facts['packages.file_observation.0.name']);
+        self::assertSame('8.3.6', $facts['packages.file_observation.0.version']);
+    }
+
     public function testMalformedStatusRemainsUnknownWhenPackageCommandIsBlocked(): void
     {
         file_put_contents($this->root . '/var/lib/dpkg/status', self::validStatus() . "\n" . self::validStatus());
