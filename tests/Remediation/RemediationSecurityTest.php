@@ -146,6 +146,46 @@ final class RemediationSecurityTest extends TestCase
         }
     }
 
+    public function test_verified_fixed_rejects_valid_https_urls_not_associated_with_the_assessment_cve(): void
+    {
+        $cve = 'CVE-2026-109618';
+        $subjectId = 'cli-aaaa';
+        $assessment = [
+            'record_type' => 'assessment',
+            'record_id' => 'assessment:' . $cve . ':' . $subjectId,
+            'subject_id' => $subjectId,
+            'verdict' => 'verified_fixed',
+            'patch_status' => 'verified_fixed',
+            'rationale' => 'claims vendor-fixed',
+            'patch_evidence_ids' => ['fact.basis.1'],
+        ];
+
+        // These are syntactically valid HTTPS URLs. Neither substantiates the
+        // referenced CVE, even if the second is hosted by a trusted vendor.
+        foreach ([
+            'https://example.org/advisory',
+            'https://security-tracker.debian.org/tracker/CVE-2026-109619',
+        ] as $unrelatedUrl) {
+            $report = $this->baseReport([[
+                'fact_id' => 'fact.basis.1',
+                'key' => 'advisory.' . $cve . '.' . $subjectId . '.assessment_basis',
+                'value' => ['source_url' => $unrelatedUrl, 'reason' => 'fixed by vendor'],
+                'source_id' => 's1',
+            ]], [$assessment]);
+
+            $plan = (new RemediationPlanBuilder())->build($report);
+
+            self::assertCount(1, $plan->actions);
+            self::assertSame(
+                RemediationActionKind::InvestigateUnknownSubject,
+                $plan->actions[0]->kind,
+                'An unrelated advisory URL must never support a NoActionRequired recommendation.',
+            );
+            self::assertStringContainsString('no resolvable patch evidence', implode(' ', $plan->warnings));
+            self::assertFalse($plan->toArray()['automatic_apply']);
+        }
+    }
+
     public function test_verified_fixed_accepts_a_nonblank_assessment_basis_in_array_and_object_form(): void
     {
         $subjectId = 'cli-aaaa';
