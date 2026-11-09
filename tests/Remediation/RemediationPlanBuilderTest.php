@@ -36,6 +36,144 @@ final class RemediationPlanBuilderTest extends TestCase
         }
     }
 
+    public function test_verified_fixed_missing_patch_evidence_never_produces_no_action_required(): void
+    {
+        $inventory = $this->collectInventory('debian-fpm');
+        $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
+        $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+
+        $targetIndex = null;
+        $targetId = null;
+        $subjectId = null;
+        foreach ($report['records'] as $index => $record) {
+            if (($record['record_type'] ?? null) !== 'assessment'
+                || ($record['verdict'] ?? null) !== 'verified_fixed'
+                || !is_string($record['subject_id'] ?? null)
+                || !str_starts_with($record['subject_id'], 'package-')) {
+                continue;
+            }
+            $targetIndex = $index;
+            $targetId = $record['record_id'];
+            $subjectId = $record['subject_id'];
+            break;
+        }
+        self::assertNotNull($targetIndex, 'The fixture must contain a verified fixed package assessment.');
+        self::assertIsString($targetId);
+        self::assertIsString($subjectId);
+
+        $factsById = [];
+        foreach ($report['records'] as $record) {
+            if (($record['record_type'] ?? null) !== 'observation') {
+                continue;
+            }
+            $rawFacts = $record['facts'] ?? null;
+            if (!is_array($rawFacts)) {
+                continue;
+            }
+            foreach ($rawFacts as $fact) {
+                if (is_array($fact) && is_string($fact['fact_id'] ?? null)) {
+                    $factsById[$fact['fact_id']] = $fact;
+                }
+            }
+        }
+        // The evaluator deliberately includes subject/package identity IDs in
+        // patch_evidence_ids. Their presence alone cannot prove a fixed patch.
+        $identityOnlyEvidenceIds = [];
+        $originalPatchEvidenceIds = $report['records'][$targetIndex]['patch_evidence_ids'] ?? null;
+        self::assertIsArray($originalPatchEvidenceIds);
+        foreach ($originalPatchEvidenceIds as $evidenceId) {
+            if (!is_string($evidenceId)) {
+                continue;
+            }
+            $fact = $factsById[$evidenceId] ?? null;
+            if (is_array($fact) && is_string($fact['key'] ?? null)
+                && str_starts_with($fact['key'], 'package.')) {
+                $identityOnlyEvidenceIds = [$evidenceId];
+                break;
+            }
+        }
+        self::assertNotEmpty($identityOnlyEvidenceIds);
+
+        // The producer creates a separate basis for each subject. A basis for
+        // another subject with the same CVE must not validate this subject.
+        $cve = explode(':', $targetId)[1];
+        $otherSubjectBasisEvidenceIds = [];
+        foreach ($factsById as $evidenceId => $fact) {
+            if (!is_string($fact['key'] ?? null)) {
+                continue;
+            }
+            if (str_starts_with($fact['key'], 'advisory.' . $cve . '.')
+                && str_ends_with($fact['key'], '.assessment_basis')
+                && $fact['key'] !== 'advisory.' . $cve . '.' . $subjectId . '.assessment_basis') {
+                $otherSubjectBasisEvidenceIds = [$evidenceId];
+                break;
+            }
+        }
+        self::assertNotEmpty($otherSubjectBasisEvidenceIds, 'The fixture must include a second subject assessment basis.');
+
+        foreach ([[], ['fact.nonexistent.patch-evidence'], $identityOnlyEvidenceIds, $otherSubjectBasisEvidenceIds] as $unresolvedEvidenceIds) {
+            $mutated = $report;
+            $mutated['records'][$targetIndex]['patch_evidence_ids'] = $unresolvedEvidenceIds;
+            $plan = (new RemediationPlanBuilder())->build($mutated);
+            $actions = array_values(array_filter(
+                $plan->actions,
+                static fn($action): bool => $action->subjectId === $subjectId
+                    && $action->cve === explode(':', $targetId)[1],
+            ));
+
+            self::assertCount(1, $actions);
+            self::assertSame(RemediationActionKind::AwaitVendorEvidence, $actions[0]->kind);
+            self::assertNotEmpty($actions[0]->evidenceIds, 'Identity facts should still resolve, but not serve as patch proof.');
+            self::assertStringContainsString('no resolvable patch evidence', implode(' ', $plan->warnings));
+            self::assertFalse($plan->toArray()['automatic_apply']);
+        }
+    }
+
+    public function test_verified_fixed_inconsistent_patch_status_does_not_suppress_remediation(): void
+    {
+        $inventory = $this->collectInventory('debian-fpm');
+        $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
+        $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+
+        $targetIndex = null;
+        foreach ($report['records'] as $index => $record) {
+            if (($record['record_type'] ?? null) === 'assessment'
+                && ($record['verdict'] ?? null) === 'verified_fixed'
+                && ($record['patch_status'] ?? null) === 'verified_fixed') {
+                $targetIndex = $index;
+                break;
+            }
+        }
+        self::assertNotNull($targetIndex, 'Fixture needs a real evidence-backed fixed assessment.');
+        self::assertNotEmpty($report['records'][$targetIndex]['patch_evidence_ids']);
+
+        $subjectId = $report['records'][$targetIndex]['subject_id'];
+        $recordId = $report['records'][$targetIndex]['record_id'];
+        self::assertIsString($subjectId);
+        self::assertIsString($recordId);
+        $cve = explode(':', $recordId)[1];
+
+        // The assessment still cites its genuine fixed basis, but its other
+        // explicit security field is inconsistent. It must not mean "safe".
+        foreach (['unknown', 'potentially_affected', null] as $patchStatus) {
+            $mutated = $report;
+            if ($patchStatus === null) {
+                unset($mutated['records'][$targetIndex]['patch_status']);
+            } else {
+                $mutated['records'][$targetIndex]['patch_status'] = $patchStatus;
+            }
+            $plan = (new RemediationPlanBuilder())->build($mutated);
+            $actions = array_values(array_filter(
+                $plan->actions,
+                static fn($action): bool => $action->subjectId === $subjectId && $action->cve === $cve,
+            ));
+            self::assertCount(1, $actions);
+            self::assertSame(RemediationActionKind::AwaitVendorEvidence, $actions[0]->kind);
+            self::assertTrue($actions[0]->requiresHumanApproval);
+            self::assertFalse($plan->toArray()['automatic_apply']);
+        }
+    }
+
     public function test_potentially_affected_worker_produces_upgrade_proposal_with_full_fields(): void
     {
         $plan = $this->buildPlanFor('debian-fpm-vulnerable');

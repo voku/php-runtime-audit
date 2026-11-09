@@ -138,6 +138,7 @@ final class RemediationPlanBuilder
         $recordId = $record['record_id'] ?? null;
         $subjectId = $record['subject_id'] ?? null;
         $verdict = $record['verdict'] ?? null;
+        $patchStatus = $record['patch_status'] ?? null;
         $rationale = $record['rationale'] ?? null;
         $patchEvidenceIds = $record['patch_evidence_ids'] ?? null;
         if (!is_string($recordId) || !is_string($subjectId) || $subjectId === ''
@@ -154,17 +155,28 @@ final class RemediationPlanBuilder
             return null;
         }
         $cve = $parts[1];
-        $validEvidenceIds = [];
+        $validPatchEvidenceIds = [];
+        // The producer keys each assessment basis by this assessment's
+        // subject_id (also used as its target ID), including web workers.
+        // Another PHP subject's basis must not substantiate this verdict.
+        $assessmentBasisKey = 'advisory.' . $cve . '.' . $subjectId . '.assessment_basis';
+        $hasMatchingPatchBasis = false;
         foreach ($patchEvidenceIds as $evidenceId) {
             if (is_string($evidenceId) && isset($factsById[$evidenceId])) {
-                $validEvidenceIds[] = $evidenceId;
+                $validPatchEvidenceIds[] = $evidenceId;
+                // Identity facts and another subject's advisory facts
+                // are not evidence that this particular runtime is fixed.
+                if ($factsById[$evidenceId]['key'] === $assessmentBasisKey) {
+                    $hasMatchingPatchBasis = true;
+                }
             } elseif (is_string($evidenceId)) {
                 $warnings[] = sprintf('%s cites evidence_id "%s" that does not match any fact in this report; it was dropped.', $cve, SafeText::plain($evidenceId, 64));
             }
         }
 
         $identity = SubjectIdentity::resolveIndexed($factsByKey, $subjectId);
-        $validEvidenceIds = array_values(array_unique([...$validEvidenceIds, ...$identity->evidenceIds]));
+        // Identity facts identify the subject; they do not establish the patch verdict.
+        $validEvidenceIds = array_values(array_unique([...$validPatchEvidenceIds, ...$identity->evidenceIds]));
         if ($verdict === 'needs_investigation') {
             $configurationEvidenceIds = $this->configurationEvidenceIds($cve, $subjectId, $factsById, $factsByKey);
             $validEvidenceIds = array_values(array_unique([...$validEvidenceIds, ...$configurationEvidenceIds]));
@@ -181,9 +193,17 @@ final class RemediationPlanBuilder
             'A matched package version is not proof the running worker process was restarted since patching.',
             'Host compromise status is tracked independently of patch status and remains unknown regardless of this verdict.',
         ];
-        if ($verdict === 'verified_fixed' && $validEvidenceIds === []) {
-            $warnings[] = sprintf('%s claims verified_fixed for %s but cites no evidence present in this report; treat with caution and verify independently.', $cve, $subjectId);
-            array_unshift($verifiedFixedUnknowns, 'This report cites no evidence for this verified_fixed claim; it could not be independently confirmed here.');
+        if ($verdict === 'verified_fixed' && (!$hasMatchingPatchBasis || $patchStatus !== 'verified_fixed')) {
+            $warnings[] = sprintf(
+                '%s claims verified_fixed for %s with no resolvable patch evidence or inconsistent fixed patch status; the remediation recommendation was downgraded to unknown.',
+                $cve,
+                $subjectId,
+            );
+            // A no-action recommendation requires both explicit security fields to
+            // agree and a cited patch basis for this exact CVE and runtime subject.
+            // Subject identity alone is not patch proof.
+            $verdict = 'unknown';
+            $safeRationale = 'The source assessment claims a fixed build without consistent verified patch status and citable patch evidence in this report.';
         }
 
         return match ($verdict) {

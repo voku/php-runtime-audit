@@ -78,7 +78,8 @@ final class RemediationSecurityTest extends TestCase
 
         self::assertCount(2, $plan->actions, 'Conflicting claims about the same subject must both remain visible, never silently merged.');
         $kinds = array_map(static fn($action): string => $action->kind->value, $plan->actions);
-        self::assertContains(RemediationActionKind::NoActionRequired->value, $kinds);
+        self::assertNotContains(RemediationActionKind::NoActionRequired->value, $kinds);
+        self::assertContains(RemediationActionKind::InvestigateUnknownSubject->value, $kinds);
         self::assertContains(RemediationActionKind::UpgradePackage->value, $kinds);
     }
 
@@ -93,8 +94,9 @@ final class RemediationSecurityTest extends TestCase
         self::assertCount(1, $plan->actions);
         $action = $plan->actions[0];
         self::assertSame([], $action->evidenceIds);
+        self::assertSame(RemediationActionKind::InvestigateUnknownSubject, $action->kind);
         $haystack = strtolower(implode(' ', [$action->why, ...$action->unknowns, ...$plan->warnings]));
-        self::assertStringContainsString('no evidence', $haystack, 'A verified_fixed claim with zero citable evidence must be flagged, not reported as a clean, confident result.');
+        self::assertStringContainsString('no resolvable patch evidence', $haystack, 'A verified_fixed claim without citable patch facts must become unknown, not a no-action recommendation.');
     }
 
     public function test_hostile_rationale_text_cannot_alter_markdown_structure_or_inject_control_bytes(): void
