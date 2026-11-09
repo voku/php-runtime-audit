@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace voku\PhpRuntimeAudit\Tests\Remediation;
 
 use PHPUnit\Framework\TestCase;
+use voku\PhpRuntimeAudit\Advisories\AdvisoryCatalog;
 use voku\PhpRuntimeAudit\Remediation\RemediationActionKind;
 use voku\PhpRuntimeAudit\Remediation\RemediationPlanBuilder;
 use voku\PhpRuntimeAudit\Remediation\RemediationReportMarkdownRenderer;
@@ -97,6 +98,219 @@ final class RemediationSecurityTest extends TestCase
         self::assertSame(RemediationActionKind::InvestigateUnknownSubject, $action->kind);
         $haystack = strtolower(implode(' ', [$action->why, ...$action->unknowns, ...$plan->warnings]));
         self::assertStringContainsString('no resolvable patch evidence', $haystack, 'A verified_fixed claim without citable patch facts must become unknown, not a no-action recommendation.');
+    }
+
+    public function test_verified_fixed_requires_a_populated_assessment_basis_fact(): void
+    {
+        $subjectId = 'cli-aaaa';
+        $basisKey = 'advisory.CVE-2026-109618.' . $subjectId . '.assessment_basis';
+        $assessment = [
+            'record_type' => 'assessment',
+            'record_id' => 'assessment:CVE-2026-109618:' . $subjectId,
+            'subject_id' => $subjectId,
+            'verdict' => 'verified_fixed',
+            'patch_status' => 'verified_fixed',
+            'rationale' => 'claims fixed',
+            'patch_evidence_ids' => ['fact.basis.1'],
+        ];
+
+        // A matching citation key with no usable basis payload is not patch proof.
+        foreach ([
+            null,
+            [],
+            ['reason' => 'missing advisory provenance'],
+            ['source_url' => 'https://example.org/advisory'],
+            ['source_url' => '', 'reason' => 'fixed by vendor'],
+            ['source_url' => 'https://example.org/advisory', 'reason' => ''],
+            ['source_url' => " \t\n", 'reason' => 'fixed by vendor'],
+            ['source_url' => 'https://example.org/advisory', 'reason' => " \t\n"],
+            ['source_url' => "\u{00A0}", 'reason' => 'fixed by vendor'],
+            ['source_url' => 'https://example.org/advisory', 'reason' => "\u{200B}"],
+            ['source_url' => 'not an advisory URL', 'reason' => 'fixed by vendor'],
+            ['source_url' => 'javascript:alert(1)', 'reason' => 'fixed by vendor'],
+            ['source_url' => 'file:///etc/passwd', 'reason' => 'fixed by vendor'],
+            ['source_url' => 'https://user:pass@example.org/advisory', 'reason' => 'fixed by vendor'],
+            ['source_url' => 42, 'reason' => 'fixed by vendor'],
+            ['source_url' => 'https://example.org/advisory', 'reason' => false],
+            (object) ['source_url' => " \t\n", 'reason' => 'fixed by vendor'],
+        ] as $invalidBasis) {
+            $report = $this->baseReport([
+                ['fact_id' => 'fact.basis.1', 'key' => $basisKey, 'value' => $invalidBasis, 'source_id' => 's1'],
+            ], [$assessment]);
+
+            $plan = (new RemediationPlanBuilder())->build($report);
+
+            self::assertCount(1, $plan->actions);
+            self::assertSame(RemediationActionKind::InvestigateUnknownSubject, $plan->actions[0]->kind);
+            self::assertStringContainsString('no resolvable patch evidence', implode(' ', $plan->warnings));
+            self::assertFalse($plan->toArray()['automatic_apply']);
+        }
+    }
+
+    public function test_verified_fixed_rejects_valid_https_urls_not_associated_with_the_assessment_cve(): void
+    {
+        $cve = 'CVE-2026-109618';
+        $subjectId = 'cli-aaaa';
+        $assessment = [
+            'record_type' => 'assessment',
+            'record_id' => 'assessment:' . $cve . ':' . $subjectId,
+            'subject_id' => $subjectId,
+            'verdict' => 'verified_fixed',
+            'patch_status' => 'verified_fixed',
+            'rationale' => 'claims vendor-fixed',
+            'patch_evidence_ids' => ['fact.basis.1'],
+        ];
+
+        // These are syntactically valid HTTPS URLs. Neither substantiates the
+        // referenced CVE, even if the second is hosted by a trusted vendor.
+        foreach ([
+            'https://example.org/advisory',
+            'https://security-tracker.debian.org/tracker/CVE-2026-109619',
+            'https://www.php.net/archive/2026.php#2026-10-21-5',
+        ] as $unrelatedUrl) {
+            $report = $this->baseReport([[
+                'fact_id' => 'fact.basis.1',
+                'key' => 'advisory.' . $cve . '.' . $subjectId . '.assessment_basis',
+                'value' => ['source_url' => $unrelatedUrl, 'reason' => 'fixed by vendor'],
+                'source_id' => 's1',
+            ]], [$assessment]);
+
+            $plan = (new RemediationPlanBuilder())->build($report);
+
+            self::assertCount(1, $plan->actions);
+            self::assertSame(
+                RemediationActionKind::InvestigateUnknownSubject,
+                $plan->actions[0]->kind,
+                'An unrelated advisory URL must never support a NoActionRequired recommendation.',
+            );
+            self::assertStringContainsString('no resolvable patch evidence', implode(' ', $plan->warnings));
+            self::assertFalse($plan->toArray()['automatic_apply']);
+        }
+    }
+
+    public function test_conflicting_assessment_basis_facts_cannot_produce_no_action_required(): void
+    {
+        $cve = 'CVE-2026-109618';
+        $subjectId = 'cli-aaaa';
+        $basisKey = 'advisory.' . $cve . '.' . $subjectId . '.assessment_basis';
+
+        // Even when the assessment cites the apparently valid first fact, the
+        // same key has a contradictory source in this untrusted report.
+        $report = $this->baseReport([
+            [
+                'fact_id' => 'fact.basis.good',
+                'key' => $basisKey,
+                'value' => [
+                    'source_url' => 'https://security-tracker.debian.org/tracker/CVE-2026-109618',
+                    'reason' => 'vendor fixed build',
+                ],
+                'source_id' => 's1',
+            ],
+            [
+                'fact_id' => 'fact.basis.conflict',
+                'key' => $basisKey,
+                'value' => [
+                    'source_url' => 'https://example.org/unrelated',
+                    'reason' => 'conflicting basis',
+                ],
+                'source_id' => 's2',
+            ],
+        ], [[
+            'record_type' => 'assessment',
+            'record_id' => 'assessment:' . $cve . ':' . $subjectId,
+            'subject_id' => $subjectId,
+            'verdict' => 'verified_fixed',
+            'patch_status' => 'verified_fixed',
+            'rationale' => 'fixed by vendor',
+            'patch_evidence_ids' => ['fact.basis.good'],
+        ]]);
+
+        $plan = (new RemediationPlanBuilder())->build($report);
+
+        self::assertCount(1, $plan->actions);
+        self::assertSame(RemediationActionKind::InvestigateUnknownSubject, $plan->actions[0]->kind);
+        self::assertStringContainsString('conflicting assessment basis', implode(' ', $plan->warnings));
+    }
+
+    public function test_duplicate_fact_id_cannot_authorize_a_fixed_verdict(): void
+    {
+        $cve = 'CVE-2026-109618';
+        $subjectId = 'cli-aaaa';
+        $vendorUrl = null;
+        foreach (AdvisoryCatalog::load()->advisories as $advisory) {
+            if ($advisory['cve'] === $cve) {
+                $vendorUrl = $advisory['vendor_rules'][0]['source_url'] ?? null;
+                break;
+            }
+        }
+        self::assertIsString($vendorUrl);
+
+        $report = $this->baseReport([
+            [
+                'fact_id' => 'fact.duplicated',
+                'key' => 'advisory.' . $cve . '.' . $subjectId . '.assessment_basis',
+                'value' => ['source_url' => $vendorUrl, 'reason' => 'fixed by vendor'],
+                'source_id' => 's1',
+            ],
+            [
+                'fact_id' => 'fact.duplicated',
+                'key' => 'advisory.' . $cve . '.' . $subjectId . '.assessment_basis',
+                'value' => ['source_url' => 'https://example.org/contradiction', 'reason' => 'not fixed'],
+                'source_id' => 's2',
+            ],
+        ], [[
+            'record_type' => 'assessment',
+            'record_id' => 'assessment:' . $cve . ':' . $subjectId,
+            'subject_id' => $subjectId,
+            'verdict' => 'verified_fixed',
+            'patch_status' => 'verified_fixed',
+            'rationale' => 'fixed by vendor',
+            'patch_evidence_ids' => ['fact.duplicated'],
+        ]]);
+
+        $plan = (new RemediationPlanBuilder())->build($report);
+
+        self::assertCount(1, $plan->actions);
+        self::assertSame(RemediationActionKind::InvestigateUnknownSubject, $plan->actions[0]->kind);
+        self::assertStringContainsString('duplicate fact_id', implode(' ', $plan->warnings));
+        self::assertFalse($plan->toArray()['automatic_apply']);
+    }
+
+    public function test_verified_fixed_accepts_a_nonblank_assessment_basis_in_array_and_object_form(): void
+    {
+        $subjectId = 'cli-aaaa';
+        $basisKey = 'advisory.CVE-2026-109618.' . $subjectId . '.assessment_basis';
+        $assessment = [
+            'record_type' => 'assessment',
+            'record_id' => 'assessment:CVE-2026-109618:' . $subjectId,
+            'subject_id' => $subjectId,
+            'verdict' => 'verified_fixed',
+            'patch_status' => 'verified_fixed',
+            'rationale' => 'fixed by vendor',
+            'patch_evidence_ids' => ['fact.basis.1'],
+        ];
+        $vendorUrl = null;
+        foreach (AdvisoryCatalog::load()->advisories as $advisory) {
+            if ($advisory['cve'] === 'CVE-2026-109618') {
+                $vendorUrl = $advisory['vendor_rules'][0]['source_url'] ?? null;
+                break;
+            }
+        }
+        self::assertIsString($vendorUrl, 'The fixture requires a sourced fixed-version vendor rule.');
+        $validBasis = ['source_url' => $vendorUrl, 'reason' => 'fixed by vendor'];
+
+        foreach ([$validBasis, (object) $validBasis] as $basis) {
+            $report = $this->baseReport([
+                ['fact_id' => 'fact.basis.1', 'key' => $basisKey, 'value' => $basis, 'source_id' => 's1'],
+            ], [$assessment]);
+
+            $plan = (new RemediationPlanBuilder())->build($report);
+
+            self::assertCount(1, $plan->actions);
+            self::assertSame(RemediationActionKind::NoActionRequired, $plan->actions[0]->kind);
+            self::assertSame([], $plan->warnings);
+            self::assertFalse($plan->toArray()['automatic_apply']);
+        }
     }
 
     public function test_hostile_rationale_text_cannot_alter_markdown_structure_or_inject_control_bytes(): void
