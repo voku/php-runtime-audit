@@ -1,0 +1,85 @@
+name: One-shot released Loop projection repair
+on:
+  push:
+    branches:
+      - ci/loop-02081-projection-20261109
+    paths:
+      - '.github/workflows/one-shot-loop-02081-assets.yml'
+permissions:
+  contents: write
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ci/loop-02081-projection-20261109
+          persist-credentials: true
+      - name: Guard exact branch input
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          coverage: none
+      - name: Resolve only the eligible released owner update
+        shell: bash
+        run: |
+          set -euo pipefail
+          composer update 'voku/agent-loop:0.20.81' --with-all-dependencies --minimal-changes --no-interaction --prefer-dist --no-progress --no-scripts --no-plugins
+          php -r '
+            $lock = json_decode(file_get_contents("composer.lock"), true, 512, JSON_THROW_ON_ERROR);
+            $packages = array_column($lock["packages-dev"], null, "name");
+            if (($packages["voku/agent-loop"]["version"] ?? null) !== "0.20.81") {
+                throw new RuntimeException("Expected exact released Loop 0.20.81");
+            }
+          '
+          composer validate --no-check-publish
+      - name: Reproject via the actual released owner CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          vendor/bin/agent-loop init scaffold --prefix=PRA --agent=codex
+          vendor/bin/agent-loop init sync-policy --agent=codex
+          vendor/bin/agent-loop init install-assets --agent=codex
+          vendor/bin/agent-loop init validate --kind=skills --agent=codex
+          git status --short
+          while IFS= read -r changed; do
+            case "$changed" in
+              composer.lock|.codex/skills/*) ;;
+              *) echo "Refusing unexpected tracked change: $changed" >&2; exit 1 ;;
+            esac
+          done < <(git diff --name-only)
+          while IFS= read -r added; do
+            case "$added" in
+              .codex/skills/*) ;;
+              *) echo "Refusing unexpected untracked path: $added" >&2; exit 1 ;;
+            esac
+          done < <(git ls-files --others --exclude-standard)
+      - name: Verify tests, PHPStan and formatter with updated owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          composer test
+          composer analyse
+          composer format-check
+      - name: Commit only the owner-managed Codex skills and lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -- composer.lock .codex/skills
+          test -n "$(git diff --cached --name-only)"
+          while IFS= read -r changed; do
+            case "$changed" in
+              composer.lock|.codex/skills/*) ;;
+              *) echo "Unexpected staged file: $changed" >&2; exit 1 ;;
+            esac
+          done < <(git diff --cached --name-only)
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'chore(skills): reproject released agent-loop 0.20.81 Codex skills'
+          git push origin HEAD:refs/heads/ci/loop-02081-projection-20261109
