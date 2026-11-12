@@ -32,8 +32,8 @@
             "semantic_owner": "voku/agent-loop",
             "source_path": null,
             "source_reference": "resources/subagents/agent-loop-investigator.md",
-            "source_sha256": "sha256:86e069bbaf2a8e1c257f5c91ff1dc3379e8c8c921edd0eae4aa71e8ed12e9cb7",
-            "representation_sha256": "sha256:290fbe71552703450c796cc21e066415434c25318c2ac97ab5e197c2b071e36e",
+            "source_sha256": "sha256:fe725e1db876b3712eba476fcb912294dddea541860931e2665a50e21405345c",
+            "representation_sha256": "sha256:288fc60de55b3501dd06f2ac3e5126e43b9ee2ad60ea068509c0e4890ad32100",
             "adopted": false
         },
         {
@@ -52,8 +52,8 @@
             "semantic_owner": "voku/agent-loop",
             "source_path": null,
             "source_reference": "resources/subagents/agent-loop-surgical-builder.md",
-            "source_sha256": "sha256:60120476166e2e34c050792b622c30d7b34a84fd629fe37da982a1f60e4597f3",
-            "representation_sha256": "sha256:77ce3ac83a9dd4dda375ee045836c5d7b338bb3d01f2d9946cd90179cae5afd0",
+            "source_sha256": "sha256:a15a41b9a6cc2c4d97f8c1dd69b067cc29e4eeb8b277eecf8136ecc461bd2afb",
+            "representation_sha256": "sha256:5047fed47eb26e1f0a693128ba1d93ce2cd6dad294bfe10edfaf4dd5d54dd966",
             "adopted": false
         }
     ]
