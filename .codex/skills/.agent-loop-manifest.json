@@ -232,8 +232,8 @@
             "semantic_owner": "project",
             "source_path": "/home/runner/work/php-runtime-audit/php-runtime-audit/resources/skills/php-runtime-audit",
             "source_reference": null,
-            "source_sha256": "sha256:b1e295d3c8bb2fa0db7912760f0ab6ee33011559608b0fa9585d9b4fbf4ac2a1",
-            "representation_sha256": "sha256:b1e295d3c8bb2fa0db7912760f0ab6ee33011559608b0fa9585d9b4fbf4ac2a1",
+            "source_sha256": "sha256:dd32e30bdc58f62b042329b8f3824ec260f61b92afb1fd2c25c6430bec8706ed",
+            "representation_sha256": "sha256:dd32e30bdc58f62b042329b8f3824ec260f61b92afb1fd2c25c6430bec8706ed",
             "adopted": false
         }
     ]
