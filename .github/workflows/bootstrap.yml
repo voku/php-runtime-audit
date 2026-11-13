@@ -132,6 +132,7 @@ jobs:
           php -r '$status = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR); if (($status["host"] ?? null) !== "codex" || ($status["selection"] ?? null) !== "explicit" || ($status["next_action_kind"] ?? null) !== "none" || ($status["integration"]["policy"] ?? null) !== "ready" || ($status["integration"]["skills"] ?? null) !== "ready") { fwrite(STDERR, "Codex project integration is not converged.\n"); exit(1); }' "$RUNNER_TEMP/host-status.json"
       - name: Check committed projection has no drift
         run: |
+          php -r '$m = json_decode(file_get_contents(".codex/skills/.agent-loop-manifest.json"), true, 512, JSON_THROW_ON_ERROR); foreach ($m["entries"] as $e) { if (($e["target"] ?? null) === "php-runtime-audit") { echo "PRA_GENERATED_DIGESTS=" . json_encode(["source_sha256" => $e["source_sha256"], "representation_sha256" => $e["representation_sha256"]], JSON_THROW_ON_ERROR) . PHP_EOL; break; } }'
           git diff --exit-code -- composer.lock AGENTS.md .agent-loop .codex ':(exclude).codex/skills/.agent-loop-manifest.json'
           cat > "$RUNNER_TEMP/check-skill-manifest.php" <<'PHP'
           <?php
