@@ -1,6 +1,8 @@
 ---
 name: php-runtime-audit
 description: Selects bounded, read-only PHP runtime, configuration, incident-triage, or source-review guidance from explicit facts. It does not scan hosts, test exploits, or issue patch or compromise verdicts.
+metadata:
+  author: Lars Moelleken <lars@moelleken.org>
 ---
 
 # PHP Runtime Audit
@@ -11,23 +13,29 @@ Use this skill for guidance-mode audit planning. `voku/agent-loop` remains the o
 
 1. Ask which intent applies: `runtime-patch`, `configuration`, `incident-triage`, or `source-review`.
 2. Use only PHP facts the server owner supplied or has already collected locally. Do not connect to a host, run remote checks, collect logs, change configuration, restart services, or upload evidence.
-3. Create a local JSON input with `intent` and `facts`, then run `php bin/php-runtime-audit < local-facts.json`. The command reads the supplied file through standard input and writes its selection to standard output. The fact keys are `php_version`, `sapi`, `distribution`, `vendor`, `container`, `extensions`, and `configuration`. Use `true`, `false`, or `null` for boolean facts; `null` means unknown.
+3. Create a local JSON input with `intent` and `facts`, saving it in a file such as local-facts.json. From the repository root, run:
+
+   ```bash
+   php bin/php-runtime-audit < local-facts.json
+   ```
+
+   The command reads only the supplied standard input and writes its selection to standard output. The fact keys are `php_version`, `sapi`, `distribution`, `vendor`, `container`, `extensions`, and `configuration`. Use `true`, `false`, or `null` for boolean facts; `null` means unknown.
 4. Read only the Markdown resources named in the returned `profile_context` object. Do not load other profile files to fill context. The output lists each selected profile's ID and selection reason and gives a fixed byte budget for all selected profile text.
 5. Keep every unresolved fact visible. In particular, an unknown vendor backport remains unverified; the selector has no advisory adjudicator and never emits a patch verdict.
 
-Example input for an explicitly identified Debian PHP-FPM runtime:
+Example input for an explicitly identified Debian PHP-FPM runtime (replace the version placeholder with the observed version, including its patch number; add configuration keys such as opcache.enable only when observed):
 
 ```json
 {
   "intent": "runtime-patch",
   "facts": {
-    "php_version": "8.4.2",
+    "php_version": "REPLACE_WITH_OBSERVED_PATCH_VERSION",
     "sapi": "fpm",
     "distribution": "debian",
     "vendor": "debian",
     "container": null,
     "extensions": ["json", "opcache"],
-    "configuration": {"opcache.enable": true}
+    "configuration": {}
   }
 }
 ```
