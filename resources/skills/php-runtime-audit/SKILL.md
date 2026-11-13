@@ -1,6 +1,8 @@
 ---
 name: php-runtime-audit
 description: Selects bounded, read-only PHP runtime, configuration, incident-triage, or source-review guidance from explicit facts. It does not scan hosts, test exploits, or issue patch or compromise verdicts.
+metadata:
+  author: Lars Moelleken <lars@moelleken.org>
 ---
 
 # PHP Runtime Audit
