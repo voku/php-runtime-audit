@@ -11,10 +11,36 @@ final class SystemProcessRunner implements ProcessRunner
 {
     public function run(ProcessCommandSpec $command): ProcessResult
     {
+        if (!$command instanceof ProcessCommand && !$command instanceof DiscoveredPhpCommand) {
+            return new ProcessResult(null, '', error: 'process request is outside the bounded execution policy');
+        }
+
         $argv = $command->argv();
-        if (!is_executable($command->executablePath())) {
+        if (($argv[0] ?? null) !== $command->executablePath()) {
+            return new ProcessResult(null, '', error: 'process request is outside the bounded execution policy');
+        }
+
+        $executablePath = $command->executablePath();
+        if ($command instanceof DiscoveredPhpCommand) {
+            $resolvedExecutablePath = $command->resolvedExecutablePath();
+        } elseif ($command->isPhpCli() || $command->isFpm()) {
+            $resolvedExecutablePath = DiscoveredPhpCommand::resolveAllowedExecutableTarget(
+                $executablePath,
+                $command->isFpm() ? 'fpm' : 'cli',
+            );
+        } else {
+            $resolvedExecutablePath = self::resolveAllowlistedExecutable(
+                $executablePath,
+                self::allowedCanonicalExecutablePaths($command),
+            );
+            if ($resolvedExecutablePath === null) {
+                return new ProcessResult(null, '', error: 'process request is outside the bounded execution policy');
+            }
+        }
+        if ($resolvedExecutablePath === null || !is_executable($resolvedExecutablePath)) {
             return new ProcessResult(null, '', error: 'allowlisted executable is unavailable');
         }
+        $argv[0] = $resolvedExecutablePath;
 
         if (NetworkIsolation::currentNamespaceIsIsolated()) {
             return $this->execute($argv, $command->timeoutSeconds(), $command->outputLimitBytes());
@@ -40,6 +66,32 @@ final class SystemProcessRunner implements ProcessRunner
         }
 
         return $result;
+    }
+
+    /** @return list<string> */
+    private static function allowedCanonicalExecutablePaths(ProcessCommand $command): array
+    {
+        return match ($command) {
+            ProcessCommand::ApkPackages => ['/sbin/apk', '/usr/sbin/apk'],
+            default => [$command->executablePath()],
+        };
+    }
+
+    /**
+     * @param list<string> $allowedCanonicalPaths
+     */
+    private static function resolveAllowlistedExecutable(string $executablePath, array $allowedCanonicalPaths): ?string
+    {
+        if (is_link($executablePath)) {
+            return null;
+        }
+
+        $resolvedExecutablePath = realpath($executablePath);
+        if (!is_string($resolvedExecutablePath) || !in_array($resolvedExecutablePath, $allowedCanonicalPaths, true)) {
+            return null;
+        }
+
+        return $resolvedExecutablePath;
     }
 
     /** @param list<string> $argv */

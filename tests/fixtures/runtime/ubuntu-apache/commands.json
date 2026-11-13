@@ -1,6 +1,12 @@
 {
   "commands": {
-    "php-usr-bin": {"exit_code": 0, "stdout": "{\"version\":\"8.3.6\",\"sapi\":\"cli\",\"extensions\":[\"Core\",\"json\"]}"},
-    "dpkg-packages": {"exit_code": 0, "stdout": "php8.3-cli\t8.3.6-0ubuntu0.24.04.13\nlibapache2-mod-php8.3\t8.3.6-0ubuntu0.24.04.13\n"}
+    "php-usr-bin": {
+      "exit_code": 0,
+      "stdout": "{\"version\":\"8.3.6\",\"sapi\":\"cli\",\"extensions\":[\"Core\",\"json\"]}"
+    },
+    "dpkg-packages": {
+      "exit_code": 0,
+      "stdout": "php8.3-cli\t8.3.6-0ubuntu0.24.04.13\tinstall ok installed\tamd64\nlibapache2-mod-php8.3\t8.3.6-0ubuntu0.24.04.13\tinstall ok installed\tamd64\n"
+    }
   }
 }

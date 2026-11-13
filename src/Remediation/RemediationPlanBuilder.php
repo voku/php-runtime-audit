@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace voku\PhpRuntimeAudit\Remediation;
 
 use voku\PhpRuntimeAudit\Advisories\AdvisoryCatalog;
+use voku\PhpRuntimeAudit\Advisories\RuntimeAuditReportBuilder;
 
 /**
  * Builds reviewable remediation proposals from an already-generated runtime audit report.
@@ -20,8 +21,8 @@ use voku\PhpRuntimeAudit\Advisories\AdvisoryCatalog;
  */
 final class RemediationPlanBuilder
 {
-    private const MAX_RECORDS = 4096;
-    private const MAX_FACTS = 4096;
+    private const MAX_RECORDS = RuntimeAuditReportBuilder::MAX_REPORT_RECORDS;
+    private const MAX_FACTS = RuntimeAuditReportBuilder::MAX_REPORT_FACTS;
 
     private readonly AdvisoryCatalog $catalog;
 
@@ -39,7 +40,22 @@ final class RemediationPlanBuilder
             return new RemediationPlan(gmdate('Y-m-d\TH:i:s\Z'), null, [], ['The report has no usable records array; no proposals could be built.']);
         }
 
-        $facts = $this->extractFacts($records, $warnings);
+        /** @var array<string, true> $duplicateFactIds */
+        $duplicateFactIds = [];
+        $facts = $this->extractFacts($records, $warnings, $duplicateFactIds);
+        $factsById = [];
+        $factsByKey = [];
+        /** @var array<string, true> $duplicateAssessmentBasisKeys */
+        $duplicateAssessmentBasisKeys = [];
+        foreach ($facts as $fact) {
+            $factsById[$fact['fact_id']] = $fact;
+            if (str_ends_with($fact['key'], '.assessment_basis') && isset($factsByKey[$fact['key']])) {
+                // Two observations claiming one security basis make its
+                // provenance ambiguous, even when only one fact was cited.
+                $duplicateAssessmentBasisKeys[$fact['key']] = true;
+            }
+            $factsByKey[$fact['key']] = $fact;
+        }
         $advisoriesByCve = [];
         foreach ($this->catalog->advisories as $advisory) {
             $advisoriesByCve[$advisory['cve']] = $advisory;
@@ -51,7 +67,7 @@ final class RemediationPlanBuilder
                 continue;
             }
             /** @var array<string, mixed> $record */
-            $action = $this->buildAction($record, $facts, $advisoriesByCve, $warnings);
+            $action = $this->buildAction($record, $factsById, $factsByKey, $duplicateAssessmentBasisKeys, $duplicateFactIds, $advisoriesByCve, $warnings);
             if ($action !== null) {
                 $actions[] = $action;
             }
@@ -71,50 +87,73 @@ final class RemediationPlanBuilder
     /**
      * @param list<mixed> $records
      * @param list<string> $warnings
+     * @param array<string, true> $duplicateFactIds
      * @phpstan-return list<ReportFact>
      */
-    private function extractFacts(array $records, array &$warnings): array
+    private function extractFacts(array $records, array &$warnings, array &$duplicateFactIds): array
     {
+        $foundObservation = false;
+        $facts = [];
+        $seenFactIds = [];
         foreach ($records as $record) {
             if (!is_array($record) || ($record['record_type'] ?? null) !== 'observation') {
                 continue;
             }
+            $foundObservation = true;
             $rawFacts = $record['facts'] ?? null;
             if (!is_array($rawFacts) || !array_is_list($rawFacts)) {
                 $warnings[] = 'The observation record has no usable facts list; evidence citations will be incomplete.';
 
-                return [];
+                continue;
             }
-            if (count($rawFacts) > self::MAX_FACTS) {
-                $warnings[] = 'The observation record exceeds the supported fact count; evidence citations may be incomplete.';
-                $rawFacts = array_slice($rawFacts, 0, self::MAX_FACTS);
-            }
-            $facts = [];
             foreach ($rawFacts as $fact) {
-                if (is_array($fact) && is_string($fact['fact_id'] ?? null) && is_string($fact['key'] ?? null) && is_string($fact['source_id'] ?? null)) {
-                    $facts[] = ['fact_id' => $fact['fact_id'], 'key' => $fact['key'], 'value' => $fact['value'] ?? null, 'source_id' => $fact['source_id']];
+                if (!is_array($fact) || !is_string($fact['fact_id'] ?? null)
+                    || !is_string($fact['key'] ?? null) || !is_string($fact['source_id'] ?? null)) {
+                    continue;
                 }
-            }
+                if (isset($seenFactIds[$fact['fact_id']])) {
+                    // Duplicate identifiers make citations ambiguous even if the
+                    // first observation appears valid. Never silently trust it.
+                    $duplicateFactIds[$fact['fact_id']] = true;
+                    continue;
+                }
+                if (count($facts) >= self::MAX_FACTS) {
+                    $warnings[] = 'The report exceeds the supported fact count; evidence citations may be incomplete.';
 
-            return $facts;
+                    return $facts;
+                }
+                $facts[] = [
+                    'fact_id' => $fact['fact_id'],
+                    'key' => $fact['key'],
+                    'value' => $fact['value'] ?? null,
+                    'source_id' => $fact['source_id'],
+                ];
+                $seenFactIds[$fact['fact_id']] = true;
+            }
         }
 
-        $warnings[] = 'No observation record was found; evidence citations will be incomplete.';
+        if (!$foundObservation) {
+            $warnings[] = 'No observation record was found; evidence citations will be incomplete.';
+        }
 
-        return [];
+        return $facts;
     }
 
     /**
      * @param array<string, mixed> $record
-     * @phpstan-param list<ReportFact> $facts
+     * @param array<string, ReportFact> $factsById
+     * @param array<string, ReportFact> $factsByKey
+     * @param array<string, true> $duplicateAssessmentBasisKeys
+     * @param array<string, true> $duplicateFactIds
      * @phpstan-param array<string, AdvisoryDefinition> $advisoriesByCve
      * @param list<string> $warnings
      */
-    private function buildAction(array $record, array $facts, array $advisoriesByCve, array &$warnings): ?RemediationAction
+    private function buildAction(array $record, array $factsById, array $factsByKey, array $duplicateAssessmentBasisKeys, array $duplicateFactIds, array $advisoriesByCve, array &$warnings): ?RemediationAction
     {
         $recordId = $record['record_id'] ?? null;
         $subjectId = $record['subject_id'] ?? null;
         $verdict = $record['verdict'] ?? null;
+        $patchStatus = $record['patch_status'] ?? null;
         $rationale = $record['rationale'] ?? null;
         $patchEvidenceIds = $record['patch_evidence_ids'] ?? null;
         if (!is_string($recordId) || !is_string($subjectId) || $subjectId === ''
@@ -131,23 +170,59 @@ final class RemediationPlanBuilder
             return null;
         }
         $cve = $parts[1];
-        $factIdSet = [];
-        foreach ($facts as $fact) {
-            $factIdSet[$fact['fact_id']] = true;
-        }
-        $validEvidenceIds = [];
+        $advisory = $advisoriesByCve[$cve] ?? null;
+        $validPatchEvidenceIds = [];
+        // The producer keys each assessment basis by this assessment's
+        // subject_id (also used as its target ID), including web workers.
+        // Another PHP subject's basis must not substantiate this verdict.
+        $assessmentBasisKey = 'advisory.' . $cve . '.' . $subjectId . '.assessment_basis';
+        $hasMatchingPatchBasis = false;
         foreach ($patchEvidenceIds as $evidenceId) {
-            if (is_string($evidenceId) && isset($factIdSet[$evidenceId])) {
-                $validEvidenceIds[] = $evidenceId;
+            if (is_string($evidenceId) && isset($factsById[$evidenceId])) {
+                $validPatchEvidenceIds[] = $evidenceId;
+                // Identity facts and another subject's advisory facts
+                // are not evidence that this particular runtime is fixed.
+                if ($factsById[$evidenceId]['key'] === $assessmentBasisKey && !isset($duplicateFactIds[$evidenceId])) {
+                    $basisValue = $factsById[$evidenceId]['value'];
+                    if ($basisValue instanceof \stdClass) {
+                        $basisValue = get_object_vars($basisValue);
+                    }
+                    // A matching key with only blank provenance or rationale is
+                    // not usable evidence that this particular subject is fixed.
+                    if (is_array($basisValue)
+                        && self::hasCveVendorAdvisoryUrl($basisValue['source_url'] ?? null, $advisory)
+                        && self::hasVisibleText($basisValue['reason'] ?? null)) {
+                        $hasMatchingPatchBasis = true;
+                    }
+                }
             } elseif (is_string($evidenceId)) {
                 $warnings[] = sprintf('%s cites evidence_id "%s" that does not match any fact in this report; it was dropped.', $cve, SafeText::plain($evidenceId, 64));
             }
         }
 
-        $identity = SubjectIdentity::resolve($facts, $subjectId);
-        $validEvidenceIds = array_values(array_unique([...$validEvidenceIds, ...$identity->evidenceIds]));
+        foreach ($patchEvidenceIds as $evidenceId) {
+            if (is_string($evidenceId) && isset($duplicateFactIds[$evidenceId])) {
+                $warnings[] = sprintf('%s cites duplicate fact_id "%s"; its patch evidence is ambiguous.', $cve, SafeText::plain($evidenceId, 64));
+            }
+        }
 
-        $advisory = $advisoriesByCve[$cve] ?? null;
+        if (isset($duplicateAssessmentBasisKeys[$assessmentBasisKey])) {
+            $warnings[] = sprintf(
+                '%s has conflicting assessment basis facts for %s; the fixed verdict cannot be trusted.',
+                $cve,
+                SafeText::plain($subjectId, 64),
+            );
+            $hasMatchingPatchBasis = false;
+        }
+
+        $identity = SubjectIdentity::resolveIndexed($factsByKey, $subjectId);
+        // Identity facts identify the subject; they do not establish the patch verdict.
+        $validEvidenceIds = array_values(array_unique([...$validPatchEvidenceIds, ...$identity->evidenceIds]));
+        if ($verdict === 'needs_investigation') {
+            $configurationEvidenceIds = $this->configurationEvidenceIds($cve, $subjectId, $factsById, $factsByKey);
+            $validEvidenceIds = array_values(array_unique([...$validEvidenceIds, ...$configurationEvidenceIds]));
+        }
+
         $advisoryTitle = $advisory !== null ? SafeText::plain($advisory['title']) : 'Advisory not found in the loaded catalog';
         $sourceNote = $advisory !== null ? sprintf(' See the advisory source for the authoritative fixed version: %s', $advisory['source_url']) : '';
 
@@ -158,9 +233,17 @@ final class RemediationPlanBuilder
             'A matched package version is not proof the running worker process was restarted since patching.',
             'Host compromise status is tracked independently of patch status and remains unknown regardless of this verdict.',
         ];
-        if ($verdict === 'verified_fixed' && $validEvidenceIds === []) {
-            $warnings[] = sprintf('%s claims verified_fixed for %s but cites no evidence present in this report; treat with caution and verify independently.', $cve, $subjectId);
-            array_unshift($verifiedFixedUnknowns, 'This report cites no evidence for this verified_fixed claim; it could not be independently confirmed here.');
+        if ($verdict === 'verified_fixed' && (!$hasMatchingPatchBasis || $patchStatus !== 'verified_fixed')) {
+            $warnings[] = sprintf(
+                '%s claims verified_fixed for %s with no resolvable patch evidence or inconsistent fixed patch status; the remediation recommendation was downgraded to unknown.',
+                $cve,
+                $subjectId,
+            );
+            // A no-action recommendation requires both explicit security fields to
+            // agree and a cited patch basis for this exact CVE and runtime subject.
+            // Subject identity alone is not patch proof.
+            $verdict = 'unknown';
+            $safeRationale = 'The source assessment claims a fixed build without consistent verified patch status and citable patch evidence in this report.';
         }
 
         return match ($verdict) {
@@ -268,6 +351,94 @@ final class RemediationPlanBuilder
                 ),
             default => $this->recordUnsupportedVerdict($warnings, $cve),
         };
+    }
+
+    /**
+     * Validate an advisory URL as a citation, not as proof of its contents.
+     * Reject local/non-web schemes and embedded credentials in untrusted reports.
+     */
+    private static function hasAdvisoryUrl(mixed $value): bool
+    {
+        if (!is_string($value) || filter_var($value, FILTER_VALIDATE_URL) === false) {
+            return false;
+        }
+
+        $parts = parse_url($value);
+        if (!is_array($parts)) {
+            return false;
+        }
+
+        $scheme = $parts['scheme'] ?? null;
+        $host = $parts['host'] ?? null;
+
+        return is_string($scheme)
+            && in_array(strtolower($scheme), ['http', 'https'], true)
+            && is_string($host)
+            && $host !== ''
+            && !isset($parts['user'])
+            && !isset($parts['pass']);
+    }
+
+    /**
+     * A syntactically valid URL is not patch provenance. Only a sourced
+     * vendor-specific fixed-version rule for the assessed CVE may support a
+     * fixed verdict. An upstream announcement alone is not vendor proof.
+     *
+     * @phpstan-param AdvisoryDefinition|null $advisory
+     */
+    private static function hasCveVendorAdvisoryUrl(mixed $value, ?array $advisory): bool
+    {
+        if ($advisory === null || !self::hasAdvisoryUrl($value)) {
+            return false;
+        }
+
+        foreach ($advisory['vendor_rules'] as $rule) {
+            if ($rule['source_url'] === $value) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Exclude whitespace, control, and invisible format characters from cited basis text.
+     * Invalid UTF-8 also fails closed rather than counting as usable evidence.
+     */
+    private static function hasVisibleText(mixed $value): bool
+    {
+        return is_string($value) && preg_match('/[\p{L}\p{N}\p{P}\p{S}]/u', $value) === 1;
+    }
+
+    /**
+     * @param array<string, ReportFact> $factsById
+     * @param array<string, ReportFact> $factsByKey
+     * @return list<string>
+     */
+    private function configurationEvidenceIds(string $cve, string $subjectId, array $factsById, array $factsByKey): array
+    {
+        $basis = $factsByKey['advisory.' . $cve . '.' . $subjectId . '.assessment_basis'] ?? null;
+        $basisValue = $basis['value'] ?? null;
+        if ($basisValue instanceof \stdClass) {
+            $basisValue = get_object_vars($basisValue);
+        }
+        $configurationFactIds = is_array($basisValue) ? ($basisValue['configuration_fact_ids'] ?? null) : null;
+        if (!is_array($configurationFactIds) || !array_is_list($configurationFactIds)) {
+            return [];
+        }
+
+        $evidenceIds = [];
+        foreach ($configurationFactIds as $factId) {
+            if (!is_string($factId)) {
+                continue;
+            }
+            $fact = $factsById[$factId] ?? null;
+            if ($fact !== null && str_starts_with($fact['key'], 'configuration.')) {
+                $evidenceIds[] = $factId;
+            }
+        }
+
+        return array_values(array_unique($evidenceIds));
     }
 
     /** @param list<string> $warnings */

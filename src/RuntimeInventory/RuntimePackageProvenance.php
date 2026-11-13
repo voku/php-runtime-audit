@@ -85,7 +85,7 @@ final class RuntimePackageProvenance
             }
         }
         if (count($stanzas) !== 1 || ($stanzas[0]['Version'] ?? null) !== $version
-            || ($stanzas[0]['Status'] ?? null) !== 'install ok installed') {
+            || !DpkgPackageStatus::hasVerifiedIntegrityStatus($stanzas[0]['Status'] ?? '')) {
             return $unknown('package_status_mismatch');
         }
         $metadataPaths = ['/var/lib/dpkg/info/' . $name . '.md5sums'];
@@ -205,7 +205,7 @@ final class RuntimePackageProvenance
         $sources = [['locator' => '/var/lib/dpkg/status', 'content' => $status]];
         $owners = [];
         foreach ($candidates as $fields) {
-            if (($fields['Status'] ?? null) !== 'install ok installed') {
+            if (!DpkgPackageStatus::hasVerifiedIntegrityStatus($fields['Status'] ?? '')) {
                 continue;
             }
             $name = $fields['Package'] ?? null;

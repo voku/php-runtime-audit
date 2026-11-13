@@ -60,7 +60,11 @@ run_fixture() {
     if [ "$kind" = fpm ]; then
         mounts+=(-v "$fixture_dir/pool.conf:/usr/local/etc/php-fpm.d/zz-pra-fixture.conf:ro")
     fi
-    container=$(docker_local run --detach --network none --security-opt no-new-privileges \
+    # The collector verifies each worker's mount namespace and process root before
+    # attributing configuration. Linux hides those links from sibling processes
+    # without CAP_SYS_PTRACE, even when they run under the same container UID.
+    # Keep this capability inside the disposable, network-disabled audit container.
+    container=$(docker_local run --detach --network none --cap-add SYS_PTRACE --security-opt no-new-privileges \
         "${mounts[@]}" "$image")
     containers+=("$container")
     ready=false
