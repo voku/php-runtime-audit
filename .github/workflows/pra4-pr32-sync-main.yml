@@ -45,6 +45,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           test "$(git ls-remote origin refs/heads/integration/pra4-main-sync-20261109 | cut -f1)" = "$EXPECTED_HEAD"
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
