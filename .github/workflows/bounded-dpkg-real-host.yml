@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 18
     steps:
       - name: Checkout exact PR head without stored credentials
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
