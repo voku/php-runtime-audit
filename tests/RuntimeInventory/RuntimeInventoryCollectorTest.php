@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace voku\PhpRuntimeAudit\Tests\RuntimeInventory;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use voku\PhpRuntimeAudit\RuntimeInventory\FixtureProcessRunner;
 use voku\PhpRuntimeAudit\RuntimeInventory\DiscoveredPhpCommand;
+use voku\PhpRuntimeAudit\RuntimeInventory\ProcessCommand;
 use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
 
 /** @phpstan-import-type RuntimeInventory from RuntimeInventoryCollector */
@@ -35,6 +37,372 @@ final class RuntimeInventoryCollectorTest extends TestCase
         );
     }
 
+    public function test_fpm_executable_probe_is_preserved_as_a_separate_runtime_subject(): void
+    {
+        $inventory = $this->collect('debian-fpm');
+
+        self::assertCount(1, $inventory['fpm_executables']);
+        self::assertSame('fpm-executable-' . substr(hash('sha256', '/usr/sbin/php-fpm8.2'), 0, 20), $inventory['fpm_executables'][0]['id']);
+        self::assertSame('/usr/sbin/php-fpm8.2', $inventory['fpm_executables'][0]['binary_path']);
+        self::assertSame('8.2.35', $inventory['fpm_executables'][0]['version']);
+        self::assertNotSame($inventory['workers'][0]['id'], $inventory['fpm_executables'][0]['id']);
+        self::assertSame('8.2.35', $this->factValue($inventory, 'runtime.fpm_executable.1.version'));
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function malformedSuccessfulFpmProbeOutputs(): iterable
+    {
+        yield 'unrecognized output' => ['unrecognized successful FPM output'];
+        yield 'valid banner followed by unexpected output' => ["PHP 8.2.35 (fpm-fcgi) (built: fixture)\nunexpected FPM output\n"];
+    }
+
+    #[DataProvider('malformedSuccessfulFpmProbeOutputs')]
+    public function test_malformed_successful_inactive_fpm_probe_keeps_discovery_incomplete(string $stdout): void
+    {
+        $root = sys_get_temp_dir() . '/pra-fpm-probe-incomplete-' . bin2hex(random_bytes(6));
+        mkdir($root . '/usr/sbin', 0777, true);
+        file_put_contents($root . '/usr/sbin/php-fpm8.2', 'fixture PHP FPM executable');
+        chmod($root . '/usr/sbin/php-fpm8.2', 0755);
+        $commandId = ProcessCommand::Fpm82->value;
+        file_put_contents($root . '/commands.json', json_encode([
+            'commands' => [
+                $commandId => ['exit_code' => 0, 'stdout' => $stdout],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-27T00:00:00Z',
+                '/usr/sbin',
+            ))->collect();
+            $coverage = array_values(array_filter(
+                $inventory['coverage'],
+                static fn(array $entry): bool => $entry['check_id'] === 'runtime.discovery',
+            ))[0];
+
+            self::assertCount(1, $inventory['fpm_executables']);
+            self::assertNull($inventory['fpm_executables'][0]['version']);
+            self::assertTrue($this->factValue($inventory, 'runtime.discovery.incomplete'));
+            self::assertTrue($this->factValue($inventory, 'runtime.discovery.fpm_probe_incomplete'));
+            self::assertSame('blocked', $coverage['status']);
+            self::assertStringContainsString('successful PHP FPM probes returned malformed or ambiguous runtime data', $coverage['gap'] ?? '');
+        } finally {
+            $this->removeTemporaryTree($root);
+        }
+    }
+
+    /** @return iterable<string, array{string, string}> */
+    public static function validSuccessfulFpmProbeOutputs(): iterable
+    {
+        yield 'PHP 5.6' => [
+            "PHP 5.6.40 (fpm-fcgi) (built: Jan 23 2019 00:16:23)\nCopyright (c) 1997-2016 The PHP Group\nZend Engine v2.6.0, Copyright (c) 1998-2016 Zend Technologies\n",
+            '5.6.40',
+        ];
+        yield 'PHP 7.4 with spaced thread mode' => [
+            "PHP 7.4.33 (fpm-fcgi) (built: Sep 29 2022 11:09:22) ( NTS )\nCopyright (c) The PHP Group\nZend Engine v3.4.0, Copyright (c) Zend Technologies\n",
+            '7.4.33',
+        ];
+        yield 'PHP 8.5' => [
+            "PHP 8.5.12 (fpm-fcgi) (built: Oct 21 2026 15:49:51) (NTS)\nCopyright (c) The PHP Group\nBuilt by https://github.com/php/php-src\nZend Engine v4.5.12, Copyright (c) Zend Technologies\n    with Zend OPcache v8.5.12, Copyright (c), by Zend Technologies\n",
+            '8.5.12',
+        ];
+    }
+
+    #[DataProvider('validSuccessfulFpmProbeOutputs')]
+    public function test_standard_successful_fpm_output_is_parsed_as_a_complete_probe(string $stdout, string $expectedVersion): void
+    {
+        $root = sys_get_temp_dir() . '/pra-fpm-standard-banner-' . bin2hex(random_bytes(6));
+        mkdir($root . '/usr/sbin', 0777, true);
+        file_put_contents($root . '/usr/sbin/php-fpm', 'fixture PHP FPM executable');
+        chmod($root . '/usr/sbin/php-fpm', 0755);
+        file_put_contents($root . '/commands.json', json_encode([
+            'commands' => [
+                ProcessCommand::FpmUsrSbin->value => ['exit_code' => 0, 'stdout' => $stdout],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-27T00:00:00Z',
+                '/usr/sbin',
+            ))->collect();
+
+            self::assertCount(1, $inventory['fpm_executables']);
+            self::assertSame($expectedVersion, $inventory['fpm_executables'][0]['version']);
+            self::assertFalse($this->factValue($inventory, 'runtime.discovery.fpm_probe_incomplete'));
+        } finally {
+            $this->removeTemporaryTree($root);
+        }
+    }
+
+    public function test_conflicting_successful_fpm_version_banners_keep_discovery_incomplete(): void
+    {
+        $root = sys_get_temp_dir() . '/pra-fpm-conflicting-banner-' . bin2hex(random_bytes(6));
+        mkdir($root . '/usr/sbin', 0777, true);
+        file_put_contents($root . '/usr/sbin/php-fpm8.2', 'fixture PHP FPM executable');
+        chmod($root . '/usr/sbin/php-fpm8.2', 0755);
+        $commandId = ProcessCommand::Fpm82->value;
+        file_put_contents($root . '/commands.json', json_encode([
+            'commands' => [
+                $commandId => ['exit_code' => 0, 'stdout' => "PHP 8.2.35 (fpm-fcgi)\nPHP 8.3.36 (fpm-fcgi)\n"],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-27T00:00:00Z',
+                '/usr/sbin',
+            ))->collect();
+            $coverage = array_values(array_filter(
+                $inventory['coverage'],
+                static fn(array $entry): bool => $entry['check_id'] === 'runtime.discovery',
+            ))[0];
+
+            self::assertCount(1, $inventory['fpm_executables']);
+            self::assertNull($inventory['fpm_executables'][0]['version']);
+            self::assertTrue($this->factValue($inventory, 'runtime.discovery.incomplete'));
+            self::assertTrue($this->factValue($inventory, 'runtime.discovery.fpm_probe_incomplete'));
+            self::assertSame('blocked', $coverage['status']);
+            self::assertStringContainsString('successful PHP FPM probes returned malformed or ambiguous runtime data', $coverage['gap'] ?? '');
+        } finally {
+            $this->removeTemporaryTree($root);
+        }
+    }
+
+    public function test_cli_version_probes_use_php_5_3_compatible_array_syntax(): void
+    {
+        $fixedProbe = ProcessCommand::PhpUsrBin->argv()[3];
+        $discoveredProbe = DiscoveredPhpCommand::fromPath('/usr/bin/php5.3', 'cli')->argv()[3];
+
+        self::assertSame($fixedProbe, $discoveredProbe);
+        self::assertStringContainsString('json_encode(array(', $fixedProbe);
+        self::assertStringNotContainsString('[', $fixedProbe);
+        self::assertStringNotContainsString(']', $fixedProbe);
+    }
+
+    public function test_safe_fixed_php_symlink_is_probed_when_no_versioned_command_exists(): void
+    {
+        $root = sys_get_temp_dir() . '/pra-fixed-php-link-' . bin2hex(random_bytes(6));
+        mkdir($root . '/usr/bin', 0777, true);
+        file_put_contents($root . '/usr/bin/php-cli', 'fixture PHP executable');
+        self::assertTrue(symlink('php-cli', $root . '/usr/bin/php'));
+        file_put_contents($root . '/commands.json', json_encode([
+            'commands' => [
+                'php-usr-bin' => ['exit_code' => 0, 'stdout' => '{"version":"8.2.35","sapi":"cli","extensions":[]}'],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-27T00:00:00Z',
+                '/usr/bin',
+            ))->collect();
+
+            self::assertCount(1, $inventory['runtimes']);
+            self::assertSame('/usr/bin/php', $inventory['runtimes'][0]['binary_path']);
+            self::assertSame('8.2.35', $inventory['runtimes'][0]['version']);
+            self::assertFalse($this->factValue($inventory, 'runtime.discovery.incomplete'));
+        } finally {
+            $this->removeTemporaryTree($root);
+        }
+    }
+
+    public function test_fixed_php_symlink_to_versioned_binary_uses_one_runtime_probe(): void
+    {
+        $root = sys_get_temp_dir() . '/pra-fixed-php-versioned-link-' . bin2hex(random_bytes(6));
+        mkdir($root . '/usr/bin', 0777, true);
+        file_put_contents($root . '/usr/bin/php8.2', 'fixture PHP executable');
+        self::assertTrue(symlink('php8.2', $root . '/usr/bin/php'));
+        file_put_contents($root . '/commands.json', json_encode([
+            'commands' => [
+                ProcessCommand::Php82->value => ['exit_code' => 0, 'stdout' => '{"version":"8.2.35","sapi":"cli","extensions":[]}'],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-27T00:00:00Z',
+                '/usr/bin',
+            ))->collect();
+
+            self::assertCount(1, $inventory['runtimes']);
+            self::assertSame('/usr/bin/php8.2', $inventory['runtimes'][0]['binary_path']);
+            self::assertFalse($this->factValue($inventory, 'runtime.discovery.incomplete'));
+            self::assertNull($this->factValue($inventory, 'command.php-usr-bin.result'));
+        } finally {
+            $this->removeTemporaryTree($root);
+        }
+    }
+
+    public function test_bin_and_sbin_path_aliases_to_scanned_runtime_directories_do_not_block_discovery(): void
+    {
+        $root = sys_get_temp_dir() . '/pra-standard-path-aliases-' . bin2hex(random_bytes(6));
+        mkdir($root . '/usr/bin', 0777, true);
+        mkdir($root . '/usr/sbin', 0777, true);
+        file_put_contents($root . '/usr/bin/php8.2', 'fixture PHP CLI');
+        self::assertTrue(symlink('usr/bin', $root . '/bin'));
+        self::assertTrue(symlink('usr/sbin', $root . '/sbin'));
+        $commandId = ProcessCommand::Php82->value;
+        file_put_contents($root . '/commands.json', json_encode([
+            'commands' => [
+                $commandId => ['exit_code' => 0, 'stdout' => '{"version":"8.2.35","sapi":"cli","extensions":[]}'],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-27T00:00:00Z',
+                '/bin:/sbin',
+            ))->collect();
+
+            self::assertCount(1, $inventory['runtimes']);
+            self::assertSame('/usr/bin/php8.2', $inventory['runtimes'][0]['binary_path']);
+            self::assertFalse($this->factValue($inventory, 'runtime.discovery.incomplete'));
+            self::assertSame('attempted', $inventory['coverage'][4]['status']);
+        } finally {
+            $this->removeTemporaryTree($root);
+        }
+    }
+
+    public function test_unknown_path_directory_symlink_still_blocks_discovery(): void
+    {
+        $root = sys_get_temp_dir() . '/pra-unknown-path-alias-' . bin2hex(random_bytes(6));
+        mkdir($root . '/opt/php/bin', 0777, true);
+        self::assertTrue(symlink('opt/php/bin', $root . '/bin'));
+        file_put_contents($root . '/commands.json', '{"commands":{}}');
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-27T00:00:00Z',
+                '/bin',
+            ))->collect();
+
+            self::assertTrue($this->factValue($inventory, 'runtime.discovery.incomplete'));
+            self::assertSame('blocked', $inventory['coverage'][4]['status']);
+        } finally {
+            $this->removeTemporaryTree($root);
+        }
+    }
+
+    public function test_fixed_php_symlink_outside_runtime_directories_is_not_probed(): void
+    {
+        $root = sys_get_temp_dir() . '/pra-unsafe-php-link-' . bin2hex(random_bytes(6));
+        mkdir($root . '/usr/bin', 0777, true);
+        mkdir($root . '/etc', 0777, true);
+        file_put_contents($root . '/etc/php-source', 'must not be probed');
+        self::assertTrue(symlink('../../etc/php-source', $root . '/usr/bin/php'));
+        file_put_contents($root . '/commands.json', json_encode([
+            'commands' => [
+                'php-usr-bin' => ['exit_code' => 0, 'stdout' => '{"version":"8.2.35","sapi":"cli","extensions":[]}'],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-27T00:00:00Z',
+                '/usr/bin',
+            ))->collect();
+
+            self::assertSame([], $inventory['runtimes']);
+            self::assertTrue($this->factValue($inventory, 'runtime.discovery.incomplete'));
+        } finally {
+            $this->removeTemporaryTree($root);
+        }
+    }
+
+    public function test_malformed_php_runtime_names_are_not_probed_and_block_discovery_coverage(): void
+    {
+        $root = sys_get_temp_dir() . '/pra-malformed-php-name-' . bin2hex(random_bytes(6));
+        mkdir($root . '/usr/bin', 0777, true);
+        file_put_contents($root . '/usr/bin/php7..4', 'malformed PHP executable name');
+        file_put_contents($root . '/commands.json', '{"commands":{}}');
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-27T00:00:00Z',
+                '/usr/bin',
+            ))->collect();
+
+            self::assertSame([], $inventory['runtimes']);
+            self::assertTrue($this->factValue($inventory, 'runtime.discovery.incomplete'));
+            $coverage = array_values(array_filter(
+                $inventory['coverage'],
+                static fn(array $entry): bool => $entry['check_id'] === 'runtime.discovery',
+            ));
+            self::assertCount(1, $coverage);
+            self::assertSame('blocked', $coverage[0]['status']);
+            self::assertStringNotContainsString('command.discovered-', json_encode($inventory['facts'], JSON_THROW_ON_ERROR));
+        } finally {
+            $this->removeTemporaryTree($root);
+        }
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function malformedSuccessfulCliProbeOutputs(): iterable
+    {
+        yield 'malformed JSON' => ['not-json'];
+        yield 'duplicate JSON key' => ['{"version":"7.4.33","version":"7.4.34","sapi":"cli","extensions":[]}'];
+    }
+
+    #[DataProvider('malformedSuccessfulCliProbeOutputs')]
+    public function test_malformed_successful_cli_probe_keeps_mixed_discovery_incomplete(string $invalidOutput): void
+    {
+        $root = sys_get_temp_dir() . '/pra-cli-probe-incomplete-' . bin2hex(random_bytes(6));
+        mkdir($root . '/usr/bin', 0777, true);
+        file_put_contents($root . '/usr/bin/php', 'fixture PHP CLI');
+        file_put_contents($root . '/usr/bin/php7.4', 'fixture PHP 7.4 CLI');
+        $invalidCommandId = DiscoveredPhpCommand::fromPath('/usr/bin/php7.4', 'cli')->id();
+        file_put_contents($root . '/commands.json', json_encode([
+            'commands' => [
+                ProcessCommand::PhpUsrBin->value => [
+                    'exit_code' => 0,
+                    'stdout' => '{"version":"8.2.35","sapi":"cli","extensions":[]}',
+                ],
+                $invalidCommandId => ['exit_code' => 0, 'stdout' => $invalidOutput],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-27T00:00:00Z',
+                '/usr/bin',
+            ))->collect();
+            $coverage = array_values(array_filter(
+                $inventory['coverage'],
+                static fn(array $entry): bool => $entry['check_id'] === 'runtime.discovery',
+            ))[0];
+
+            self::assertCount(1, $inventory['runtimes']);
+            self::assertSame('/usr/bin/php', $inventory['runtimes'][0]['binary_path']);
+            self::assertTrue($this->factValue($inventory, 'runtime.discovery.incomplete'));
+            self::assertTrue($this->factValue($inventory, 'runtime.discovery.cli_probe_incomplete'));
+            self::assertSame('blocked', $coverage['status']);
+            self::assertStringContainsString('successful PHP CLI probes returned malformed or ambiguous runtime data', $coverage['gap'] ?? '');
+        } finally {
+            $this->removeTemporaryTree($root);
+        }
+    }
+
     public function test_legacy_cli_installations_are_discovered_as_separate_versioned_runtimes(): void
     {
         $root = sys_get_temp_dir() . '/pra-legacy-cli-' . bin2hex(random_bytes(6));
@@ -43,14 +411,14 @@ final class RuntimeInventoryCollectorTest extends TestCase
         file_put_contents($root . '/usr/bin/php5.6', 'fixture PHP 5.6');
         file_put_contents($root . '/usr/bin/php7.4', 'fixture PHP 7.4');
         file_put_contents($root . '/usr/bin/dpkg-query', 'fixture package query');
-        file_put_contents($root . '/var/lib/dpkg/status', "Package: php5.6-cli\nStatus: install ok installed\n\nPackage: php7.4-cli\nStatus: install ok installed\n");
+        file_put_contents($root . '/var/lib/dpkg/status', "Package: php5.6-cli\nStatus: install ok installed\nArchitecture: amd64\n\nPackage: php7.4-cli\nStatus: install ok installed\nArchitecture: amd64\n");
         $php56 = DiscoveredPhpCommand::fromPath('/usr/bin/php5.6', 'cli')->id();
         $php74 = DiscoveredPhpCommand::fromPath('/usr/bin/php7.4', 'cli')->id();
         file_put_contents($root . '/commands.json', json_encode([
             'commands' => [
                 $php56 => ['exit_code' => 0, 'stdout' => '{"version":"5.6.40","sapi":"cli","extensions":[]}'],
                 $php74 => ['exit_code' => 0, 'stdout' => '{"version":"7.4.33","sapi":"cli","extensions":[]}'],
-                'dpkg-packages' => ['exit_code' => 0, 'stdout' => "php5.6-cli\t5.6.40-0+deb.sury.org+1\nphp7.4-cli\t7.4.33-1+deb.sury.org+1\n"],
+                'dpkg-packages' => ['exit_code' => 0, 'stdout' => "php5.6-cli\t5.6.40-0+deb.sury.org+1\tinstall ok installed\tamd64\nphp7.4-cli\t7.4.33-1+deb.sury.org+1\tinstall ok installed\tamd64\n"],
             ],
         ], JSON_THROW_ON_ERROR));
         symlink('/usr/bin/php5.6', $root . '/usr/bin/php8.1');
@@ -148,7 +516,7 @@ final class RuntimeInventoryCollectorTest extends TestCase
         file_put_contents($root . '/var/lib/dpkg/status', 'fixture package status');
         $lines = [];
         for ($index = 0; $index < 257; ++$index) {
-            $lines[] = 'php' . $index . '-cli' . "\t" . '7.4.33-' . $index;
+            $lines[] = 'php' . $index . '-cli' . "\t" . '7.4.33-' . $index . "\tinstall ok installed\tamd64";
         }
         file_put_contents($root . '/commands.json', json_encode([
             'commands' => ['dpkg-packages' => ['exit_code' => 0, 'stdout' => implode("\n", $lines) . "\n"]],
@@ -188,6 +556,12 @@ final class RuntimeInventoryCollectorTest extends TestCase
     {
         $this->expectException(\InvalidArgumentException::class);
         DiscoveredPhpCommand::fromPath('/usr/bin/../tmp/php7.4', 'cli');
+    }
+
+    public function test_discovered_runtime_command_cannot_be_created_for_a_custom_path_directory(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        DiscoveredPhpCommand::fromPath('/opt/php74/bin/php7.4', 'cli');
     }
 
     public function test_runtime_command_discovery_reports_its_command_limit(): void
@@ -290,9 +664,17 @@ final class RuntimeInventoryCollectorTest extends TestCase
 
         try {
             $inventory = (new RuntimeInventoryCollector(new FixtureProcessRunner($root), $root, '2026-10-25T00:00:00Z'))->collect();
+            $coverage = array_values(array_filter(
+                $inventory['coverage'],
+                static fn(array $entry): bool => $entry['check_id'] === 'runtime.discovery',
+            ))[0];
 
             self::assertSame('8.2.35', $inventory['runtimes'][0]['version']);
             self::assertNull($inventory['runtimes'][0]['extensions']);
+            self::assertTrue($this->factValue($inventory, 'runtime.discovery.incomplete'));
+            self::assertTrue($this->factValue($inventory, 'runtime.discovery.cli_probe_incomplete'));
+            self::assertSame('blocked', $coverage['status']);
+            self::assertStringContainsString('successful PHP CLI probes returned malformed or ambiguous runtime data', $coverage['gap'] ?? '');
         } finally {
             unlink($root . '/commands.json');
             unlink($root . '/usr/bin/php');
@@ -316,6 +698,44 @@ final class RuntimeInventoryCollectorTest extends TestCase
             '/etc/php/8.3/apache2',
             $inventory['configuration_by_sapi']['apache2']['session.upload_progress.enabled']['observations'][0]['configuration_root'],
         );
+    }
+
+    public function test_apache_module_deleted_paths_are_recorded_individually(): void
+    {
+        $fixtureRoot = dirname(__DIR__) . '/fixtures/runtime/ubuntu-apache';
+        $root = sys_get_temp_dir() . '/pra-apache-module-deleted-' . bin2hex(random_bytes(6));
+        $this->copyDirectory($fixtureRoot, $root);
+        $mapsPath = $root . '/proc/456/maps';
+        $maps = file_get_contents($mapsPath);
+        self::assertIsString($maps);
+        file_put_contents(
+            $mapsPath,
+            $maps . "7f000100-7f001000 r-xp 00000000 08:01 12346 /usr/lib/apache2/modules/libphp8.2.so (deleted)\n",
+        );
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(
+                new FixtureProcessRunner($root),
+                $root,
+                '2026-10-25T00:00:00Z',
+            ))->collect();
+
+            self::assertSame(
+                ['/usr/lib/apache2/modules/libphp8.2.so', '/usr/lib/apache2/modules/libphp8.3.so'],
+                $inventory['workers'][0]['apache_php_modules'],
+            );
+            self::assertTrue($inventory['workers'][0]['apache_php_module_deleted']);
+            self::assertSame(
+                ['/usr/lib/apache2/modules/libphp8.2.so'],
+                $inventory['workers'][0]['apache_php_module_deleted_paths'],
+            );
+            self::assertSame(
+                ['/usr/lib/apache2/modules/libphp8.2.so'],
+                $this->factValue($inventory, 'worker.1.apache_php_module_deleted_paths'),
+            );
+        } finally {
+            $this->removeTemporaryTree($root);
+        }
     }
 
     public function test_config_file_discovery_is_bounded_and_does_not_follow_symlinked_directories(): void
@@ -453,6 +873,57 @@ final class RuntimeInventoryCollectorTest extends TestCase
         }
     }
 
+    public function test_configured_extension_count_is_bounded_per_file(): void
+    {
+        $root = sys_get_temp_dir() . '/pra-runtime-extension-file-cap-' . bin2hex(random_bytes(6));
+        $configurationDirectory = $root . '/etc/php/8.2/fpm/conf.d';
+        mkdir($configurationDirectory, 0777, true);
+        $lines = [];
+        for ($index = 0; $index < 600; ++$index) {
+            $lines[] = 'extension=fixture' . $index . ".so\n";
+        }
+        file_put_contents($configurationDirectory . '/20-many-extensions.ini', implode('', $lines));
+        file_put_contents($root . '/commands.json', '{"commands":{}}');
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(new FixtureProcessRunner($root), $root, '2026-10-27T00:00:00Z'))->collect();
+
+            self::assertNull($inventory['configuration']['configured_extensions']);
+            self::assertSame('unknown', $inventory['configuration']['session.upload_progress.enabled']['state']);
+            self::assertSame('blocked', $inventory['coverage'][3]['status']);
+            self::assertStringContainsString('bounded or incomplete', $inventory['coverage'][3]['gap'] ?? '');
+        } finally {
+            $this->removeTemporaryTree($root);
+        }
+    }
+
+    public function test_configured_extension_count_is_bounded_across_files(): void
+    {
+        $root = sys_get_temp_dir() . '/pra-runtime-extension-total-cap-' . bin2hex(random_bytes(6));
+        $configurationDirectory = $root . '/etc/php/8.2/fpm/conf.d';
+        mkdir($configurationDirectory, 0777, true);
+        for ($fileIndex = 0; $fileIndex < 9; ++$fileIndex) {
+            $lines = [];
+            for ($extensionIndex = 0; $extensionIndex < 64; ++$extensionIndex) {
+                $index = ($fileIndex * 64) + $extensionIndex;
+                $lines[] = 'extension=fixture' . $index . ".so\n";
+            }
+            file_put_contents($configurationDirectory . '/' . sprintf('%02d-many-extensions.ini', $fileIndex), implode('', $lines));
+        }
+        file_put_contents($root . '/commands.json', '{"commands":{}}');
+
+        try {
+            $inventory = (new RuntimeInventoryCollector(new FixtureProcessRunner($root), $root, '2026-10-27T00:00:00Z'))->collect();
+
+            self::assertNull($inventory['configuration']['configured_extensions']);
+            self::assertSame('unknown', $inventory['configuration_by_sapi']['fpm']['session.upload_progress.enabled']['state']);
+            self::assertSame('blocked', $inventory['coverage'][3]['status']);
+            self::assertStringContainsString('bounded or incomplete', $inventory['coverage'][3]['gap'] ?? '');
+        } finally {
+            $this->removeTemporaryTree($root);
+        }
+    }
+
     public function test_inaccessible_proc_entries_do_not_become_a_claim_that_no_web_worker_exists(): void
     {
         $root = sys_get_temp_dir() . '/pra-runtime-' . bin2hex(random_bytes(6));
@@ -492,6 +963,27 @@ final class RuntimeInventoryCollectorTest extends TestCase
             $root,
             '2026-10-25T00:00:00Z',
         ))->collect();
+    }
+
+    private function copyDirectory(string $source, string $destination): void
+    {
+        mkdir($destination, 0777, true);
+        foreach (new \DirectoryIterator($source) as $entry) {
+            if ($entry->isDot()) {
+                continue;
+            }
+            $path = $entry->getPathname();
+            $target = $destination . '/' . $entry->getFilename();
+            if ($entry->isLink()) {
+                $linkTarget = readlink($path);
+                self::assertIsString($linkTarget);
+                symlink($linkTarget, $target);
+            } elseif ($entry->isDir()) {
+                $this->copyDirectory($path, $target);
+            } else {
+                copy($path, $target);
+            }
+        }
     }
 
     /** @param RuntimeInventory $inventory */

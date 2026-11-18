@@ -1,0 +1,76 @@
+name: Remediation security and PHP quality
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'composer.json'
+      - 'composer.lock'
+      - '.github/workflows/remediation-ci.yml'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  php82-runtime:
+    name: PHP 8.2 / production compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact change
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Set up minimum supported PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer:v2
+          coverage: none
+      - name: Install production dependencies only
+        run: composer install --no-dev --no-interaction --prefer-dist --no-progress
+      - name: Lint all production PHP source and CLI entrypoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          find src bin -type f -name '*.php' -print0 | xargs -0 -r -n1 php -l
+          printf '%s\n' '{"intent":"runtime-patch","facts":{}}' \
+            | php bin/php-runtime-audit \
+            | php -r '$result = json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR); if (!is_array($result["profile_context"] ?? null)) { fwrite(STDERR, "Profile context missing.\n"); exit(1); }'
+
+  php-quality:
+    name: PHP ${{ matrix.php }} / tests + PHPStan + formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.3', '8.4', '8.5']
+    steps:
+      - name: Checkout exact change
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: composer:v2
+          coverage: none
+      - name: Validate Composer metadata
+        run: composer validate --no-check-publish
+      - name: Install development dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+      - name: Run PHPUnit security and integration tests
+        run: composer test
+      - name: Run maximum-level PHPStan
+        run: composer analyse
+      - name: Run PHP-CS-Fixer in check-only mode
+        run: composer format-check

@@ -31,7 +31,7 @@ enum ProcessCommand: string implements ProcessCommandSpec
     public function argv(): array
     {
         // Keep this probe parseable on legacy PHP 5.x targets.
-        $phpScript = 'echo json_encode(["version" => PHP_VERSION, "sapi" => PHP_SAPI, "extensions" => get_loaded_extensions()]);';
+        $phpScript = 'echo json_encode(array("version" => PHP_VERSION, "sapi" => PHP_SAPI, "extensions" => get_loaded_extensions()));';
 
         return match ($this) {
             self::PhpUsrBin => ['/usr/bin/php', '-n', '-r', $phpScript],
@@ -51,7 +51,7 @@ enum ProcessCommand: string implements ProcessCommandSpec
             self::Fpm84Alpine => ['/usr/sbin/php-fpm84', '-n', '-v'],
             self::Fpm85Alpine => ['/usr/sbin/php-fpm85', '-n', '-v'],
             self::DpkgPackages => [
-                '/usr/bin/dpkg-query', '-W', '-f=${Package}\t${Version}\n', '*php*',
+                '/usr/bin/dpkg-query', '-W', '-f=${Package}\t${Version}\t${Status}\t${Architecture}\n', '*php*',
             ],
             self::RpmPackages => [
                 '/usr/bin/rpm', '-qa', '--qf', '%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}\n', 'php*', 'mod_php*',

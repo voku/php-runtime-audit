@@ -4,12 +4,11 @@
 declare(strict_types=1);
 
 use voku\PhpRuntimeAudit\Evidence\DuplicateJsonKeyGuard;
+use voku\PhpRuntimeAudit\Advisories\RuntimeAuditReportBuilder;
 use voku\PhpRuntimeAudit\Remediation\RemediationPlanBuilder;
 use voku\PhpRuntimeAudit\Remediation\RemediationReportMarkdownRenderer;
 
 require dirname(__DIR__) . '/vendor/autoload.php';
-
-const MAX_INPUT_BYTES = 1_048_576;
 
 function usage(): string
 {
@@ -47,9 +46,20 @@ try {
         throw new RuntimeException('The --report path must not be a symlink.');
     }
 
-    $input = stream_get_contents(STDIN, MAX_INPUT_BYTES + 1);
-    if (!is_string($input) || $input === '' || strlen($input) > MAX_INPUT_BYTES) {
-        throw new RuntimeException(sprintf('Input on stdin must be a non-empty runtime audit report of at most %d bytes.', MAX_INPUT_BYTES));
+    $input = stream_get_contents(STDIN, RuntimeAuditReportBuilder::MAX_REPORT_BYTES + 2);
+    if (!is_string($input) || $input === '') {
+        throw new RuntimeException(sprintf(
+            'Input on stdin must be a non-empty runtime audit report of at most %d JSON bytes, plus an optional terminal newline.',
+            RuntimeAuditReportBuilder::MAX_REPORT_BYTES,
+        ));
+    }
+    // The inventory producer appends one line feed after its bounded JSON body.
+    $jsonBytes = strlen($input) - (str_ends_with($input, "\n") ? 1 : 0);
+    if ($jsonBytes > RuntimeAuditReportBuilder::MAX_REPORT_BYTES) {
+        throw new RuntimeException(sprintf(
+            'Input on stdin must be a non-empty runtime audit report of at most %d JSON bytes, plus an optional terminal newline.',
+            RuntimeAuditReportBuilder::MAX_REPORT_BYTES,
+        ));
     }
     DuplicateJsonKeyGuard::assertNoDuplicates($input);
     $report = json_decode($input, true, 512, JSON_THROW_ON_ERROR);

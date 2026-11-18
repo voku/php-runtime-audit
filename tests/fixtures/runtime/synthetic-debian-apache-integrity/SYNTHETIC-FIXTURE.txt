@@ -2,3 +2,6 @@ This fixture contains synthetic, inert unit-test data only.
 `usr/lib/apache2/modules/libphp.so` is not a real PHP module and is not executable.
 dpkg status/md5sums entries are fabricated to exercise the apache module
 provenance reverse-lookup against an unversioned module filename.
+
+The proc namespace and root entries contain inert symlink target strings. The
+unit test materializes them as proc-like symlinks in its temporary fixture copy.
