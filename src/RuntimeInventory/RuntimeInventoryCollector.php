@@ -20,10 +20,10 @@ use voku\PhpRuntimeAudit\Evidence\DuplicateJsonKeyGuard;
  * @phpstan-type RuntimeFact array{fact_id: string, key: string, value: mixed, source_id: string}
  * @phpstan-type RuntimeConfigObservation array{value: string, file: string, context: string, configuration_root: string|null}
  * @phpstan-type RuntimeConfigSetting array{value: string|null, state: string, files: list<string>, observations: list<RuntimeConfigObservation>}
- * @phpstan-type RuntimeConfigSettings array{'session.upload_progress.enabled': RuntimeConfigSetting, 'session.serialize_handler': RuntimeConfigSetting, memory_limit: RuntimeConfigSetting, post_max_size: RuntimeConfigSetting, upload_max_filesize: RuntimeConfigSetting, fatal_error_backtraces: RuntimeConfigSetting}
+ * @phpstan-type RuntimeConfigSettings array{'session.upload_progress.enabled': RuntimeConfigSetting, 'session.serialize_handler': RuntimeConfigSetting, 'session.save_handler': RuntimeConfigSetting, 'session.save_path': RuntimeConfigSetting, memory_limit: RuntimeConfigSetting, post_max_size: RuntimeConfigSetting, upload_max_filesize: RuntimeConfigSetting, fatal_error_backtraces: RuntimeConfigSetting}
  * @phpstan-type RuntimeSapiConfiguration array{cli: RuntimeConfigSettings, fpm: RuntimeConfigSettings, apache2: RuntimeConfigSettings}
  * @phpstan-type ProcessIdentity array{pid: int, command: string, start_ticks: int}
- * @phpstan-type RuntimeConfiguration array{'session.upload_progress.enabled': RuntimeConfigSetting, 'session.serialize_handler': RuntimeConfigSetting, memory_limit: RuntimeConfigSetting, post_max_size: RuntimeConfigSetting, upload_max_filesize: RuntimeConfigSetting, fatal_error_backtraces: RuntimeConfigSetting, configured_extensions: list<array{name: string, file: string}>|null}
+ * @phpstan-type RuntimeConfiguration array{'session.upload_progress.enabled': RuntimeConfigSetting, 'session.serialize_handler': RuntimeConfigSetting, 'session.save_handler': RuntimeConfigSetting, 'session.save_path': RuntimeConfigSetting, memory_limit: RuntimeConfigSetting, post_max_size: RuntimeConfigSetting, upload_max_filesize: RuntimeConfigSetting, fatal_error_backtraces: RuntimeConfigSetting, configured_extensions: list<array{name: string, file: string}>|null}
  * @phpstan-type RuntimeCoverage array{check_id: string, status: 'attempted'|'blocked', evidence_ids: list<string>, gap: string|null}
  * @phpstan-type RuntimeConfigurationCollection array{configuration: RuntimeConfiguration, by_sapi: RuntimeSapiConfiguration}
  * @phpstan-type RuntimeInventory array{schema_version: '1.0', asset_id: string, observed_at: string, distribution: string|null, distribution_version: string|null, distribution_codename: string|null, container: bool|null, runtimes: list<RuntimeCli>, packages: list<RuntimePackage>, package_manager: string|null, package_inventory_state: string, workers: list<RuntimeWorker>, configuration: RuntimeConfiguration, configuration_by_sapi: RuntimeSapiConfiguration, sources: list<RuntimeSource>, facts: list<RuntimeFact>, coverage: list<RuntimeCoverage>}
@@ -44,12 +44,16 @@ final class RuntimeInventoryCollector
     private const CONFIG_KEYS = [
         'session.upload_progress.enabled',
         'session.serialize_handler',
+        'session.save_handler',
+        'session.save_path',
         'memory_limit',
         'post_max_size',
         'upload_max_filesize',
         'fatal_error_backtraces',
     ];
 
+    /** Per-run key: redacted session stores stay comparable within one report only. */
+    private readonly string $storeIdentityKey;
     /** @var list<RuntimeSource> */
     private array $sources = [];
     /** @var list<RuntimeFact> */
@@ -83,6 +87,7 @@ final class RuntimeInventoryCollector
             throw new RuntimeException('Inventory root must be an existing directory.');
         }
         $this->rootRealPath = rtrim($rootRealPath, DIRECTORY_SEPARATOR) ?: DIRECTORY_SEPARATOR;
+        $this->storeIdentityKey = random_bytes(32);
         $this->observedAt = $observedAt ?? (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d\TH:i:s\Z');
     }
 
@@ -1033,6 +1038,8 @@ final class RuntimeInventoryCollector
         return [
             'session.upload_progress.enabled' => $unknown,
             'session.serialize_handler' => $unknown,
+            'session.save_handler' => $unknown,
+            'session.save_path' => $unknown,
             'memory_limit' => $unknown,
             'post_max_size' => $unknown,
             'upload_max_filesize' => $unknown,
@@ -1194,7 +1201,7 @@ final class RuntimeInventoryCollector
                 }
                 $pools[$section] = [];
             }
-            $kind = preg_match('/\A\s*(php_(?:admin_)?value)\[/i', $line, $matches) === 1
+            $kind = preg_match('/\A\s*(php_(?:admin_)?(?:value|flag))\[/i', $line, $matches) === 1
                 ? strtolower($matches[1])
                 : 'ini';
             foreach ($settings as $name => $value) {
@@ -1244,7 +1251,7 @@ final class RuntimeInventoryCollector
             if (preg_match('/\A\s*([a-zA-Z0-9_.-]{1,64})\s*=\s*(.*?)\s*\z/', $line, $matches) === 1) {
                 $name = strtolower($matches[1]);
                 $rawValue = $matches[2];
-            } elseif (preg_match('/\A\s*php_(?:admin_)?value\[([a-zA-Z0-9_.-]{1,64})\]\s*=\s*(.*?)\s*\z/i', $line, $matches) === 1) {
+            } elseif (preg_match('/\A\s*php_(?:admin_)?(?:value|flag)\[([a-zA-Z0-9_.-]{1,64})\]\s*=\s*(.*?)\s*\z/i', $line, $matches) === 1) {
                 $name = strtolower($matches[1]);
                 $rawValue = $matches[2];
             }
@@ -1255,17 +1262,42 @@ final class RuntimeInventoryCollector
                 continue;
             }
             $value = trim($rawValue);
-            if (strlen($value) >= 2 && (($value[0] === '"' && str_ends_with($value, '"')) || ($value[0] === "'" && str_ends_with($value, "'")))) {
-                $value = substr($value, 1, -1);
+            if (preg_match('/\A(["\'])(.*?)\1\s*(?:[;#].*)?\z/', $value, $quoted) === 1) {
+                // A quoted value may be followed by an inline comment.
+                $value = $quoted[2];
             } else {
                 $value = trim(preg_split('/[;#]/', $value, 2)[0] ?? $value);
             }
-            if (strlen($value) <= 128 && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1) {
+            if (preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
+                continue;
+            }
+            if ($name === 'session.save_path') {
+                $value = $this->redactSessionSavePath($value);
+            }
+            if (strlen($value) <= 128) {
                 $settings[$name] = $value;
             }
         }
 
         return $settings;
+    }
+
+    /**
+     * Keep plain filesystem save paths (optionally with the files handler's "N;" / "N;MODE;"
+     * prefix). Anything else (redis/memcached DSNs, URLs, query strings, user info) may carry
+     * credentials, so only its scheme and a keyed per-run digest are retained; the digest lets
+     * contexts be compared for store identity without exposing the value.
+     */
+    private function redactSessionSavePath(string $value): string
+    {
+        if ($value === '' || preg_match('#\A(?:[0-9]{1,3};(?:[0-7]{3,4};)?)?/[A-Za-z0-9._/~+-]{0,120}\z#', $value) === 1) {
+            return $value;
+        }
+        $scheme = preg_match('#\A([A-Za-z][A-Za-z0-9+.-]{0,15})://#', $value, $matches) === 1
+            ? strtolower($matches[1])
+            : 'opaque';
+
+        return 'redacted:' . $scheme . ':' . substr(hash_hmac('sha256', $value, $this->storeIdentityKey), 0, 16);
     }
 
     /** @return list<string> */

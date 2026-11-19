@@ -32,7 +32,7 @@ final class AdvisoryEvaluatorTest extends TestCase
 
         /** @var RuntimeAuditReport $report */
         $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
-        self::assertSame(12, $report['summary']['assessment_count']);
+        self::assertSame(16, $report['summary']['assessment_count']);
         self::assertSame(5, $report['summary']['coverage_count']);
         self::assertSame('unknown', $report['summary']['compromise_evidence']);
         self::assertSame('coverage', $report['records'][1]['record_type']);
@@ -386,7 +386,7 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertStringContainsString('per-directory overrides', $inactiveAssessment['rationale']);
     }
 
-    public function test_cve_115560_does_not_combine_risk_settings_from_distinct_fpm_pools(): void
+    public function test_cve_115560_distinct_fpm_pools_are_correlated_by_shared_store_not_merged(): void
     {
         $inventory = $this->collectInventory('debian-fpm');
         $inventory['configuration_by_sapi']['fpm']['session.upload_progress.enabled']['observations'][] = [
@@ -405,11 +405,17 @@ final class AdvisoryEvaluatorTest extends TestCase
         [, $evaluation] = $this->evaluateInventory($inventory);
         $assessment = $this->assessmentMap($evaluation)['CVE-2026-115560'];
 
-        self::assertSame('unknown', $assessment['verdict']);
+        // Distinct pools are still never merged into one same-context writer. They are, however,
+        // pools of one install with no save_path, so they may share its default session store
+        // (the advisory: separate pools do not imply separate storage). That shared-store
+        // correlation, not a merged context, is what raises the investigation.
+        self::assertSame('needs_investigation', $assessment['verdict']);
         self::assertSame('unknown', $assessment['patch_status']);
+        self::assertStringContainsString('appear to share one default session location', $assessment['rationale']);
+        self::assertStringNotContainsString('contain upload progress enabled and a serialization handler named', $assessment['rationale']);
     }
 
-    public function test_cve_115560_does_not_combine_global_and_pool_settings_from_distinct_php_installs(): void
+    public function test_cve_115560_distinct_debian_installs_correlate_only_through_the_shared_default_store(): void
     {
         $inventory = $this->collectInventory('debian-fpm');
         $inventory['configuration_by_sapi']['fpm']['session.upload_progress.enabled']['observations'][] = [
@@ -428,8 +434,14 @@ final class AdvisoryEvaluatorTest extends TestCase
         [, $evaluation] = $this->evaluateInventory($inventory);
         $assessment = $this->assessmentMap($evaluation)['CVE-2026-115560'];
 
-        self::assertSame('unknown', $assessment['verdict']);
+        // Settings of distinct installs are never merged into one same-context writer. Both roots
+        // are Debian packages, though, which share /var/lib/php/sessions by default, so the
+        // shared-store correlation (8.3 enables upload progress with php, 8.2 reads with
+        // php_binary) raises the investigation.
+        self::assertSame('needs_investigation', $assessment['verdict']);
         self::assertSame('unknown', $assessment['patch_status']);
+        self::assertStringContainsString('appear to share one default session location', $assessment['rationale']);
+        self::assertStringNotContainsString('contain upload progress enabled and a serialization handler named', $assessment['rationale']);
     }
 
     public function test_cve_115560_does_not_combine_settings_when_configuration_root_is_unknown(): void
@@ -480,7 +492,7 @@ final class AdvisoryEvaluatorTest extends TestCase
                 self::fail('Advisory mitigation facts include source metadata and an as-of revision.');
             }
             self::assertStringStartsWith('https://', $sources[$fact['source_id']]['locator']);
-            self::assertSame('2026-10-25', $value['as_of']);
+            self::assertSame('2026-11-19', $value['as_of']);
             self::assertStringStartsWith('https://', $value['source_url']);
             self::assertNotSame('', $value['revision']);
         }
@@ -525,6 +537,206 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertTrue($localCatalogSeen);
         self::assertSame('advisory.catalog', $evaluation['facts'][0]['key']);
         self::assertSame('source.advisory-catalog', $evaluation['facts'][0]['source_id']);
+    }
+
+    public function test_cve_115560_patch_axis_uses_vendor_provenance_independently_of_configuration(): void
+    {
+        $catalog = $this->catalogWithSyntheticNovemberDebianRules();
+        $inventory = $this->collectInventory('synthetic-debian-integrity');
+
+        // Verified fix but unobserved session configuration: never a no-action verdict.
+        $unobservedInventory = $inventory;
+        foreach (['session.upload_progress.enabled', 'session.serialize_handler'] as $setting) {
+            $unobservedInventory['configuration_by_sapi']['fpm'][$setting] = ['value' => null, 'state' => 'unknown', 'files' => [], 'observations' => []];
+        }
+        [, $unobservedEvaluation] = $this->evaluateInventory($unobservedInventory, $catalog);
+        $unobserved = $this->assessmentMap($unobservedEvaluation)['CVE-2026-115560'];
+        $unobservedExposure = $this->factMap($unobservedEvaluation)['advisory.CVE-2026-115560.worker-1.configuration_exposure'];
+        self::assertIsArray($unobservedExposure);
+        self::assertSame('unknown', $unobservedExposure['state']);
+        self::assertSame('needs_investigation', $unobserved['verdict']);
+        self::assertSame('verified_fixed', $unobserved['patch_status']);
+        self::assertSame(['patch_status', 'compromise_evidence'], $unobservedExposure['independent_of']);
+
+        // Verified fix, upload progress enabled with a non-advisory serializer: other store writers
+        // are not collected, so this is still not a no-action result.
+        [, $enabledEvaluation] = $this->evaluateInventory($this->withFpmSessionSettings($inventory, 'On', 'php'), $catalog);
+        $enabled = $this->assessmentMap($enabledEvaluation)['CVE-2026-115560'];
+        $enabledExposure = $this->factMap($enabledEvaluation)['advisory.CVE-2026-115560.worker-1.configuration_exposure'];
+        self::assertIsArray($enabledExposure);
+        self::assertSame('unknown', $enabledExposure['state']);
+        self::assertSame('needs_investigation', $enabled['verdict']);
+        self::assertSame('verified_fixed', $enabled['patch_status']);
+        self::assertStringContainsString('cross-store serializer mismatch', $enabled['rationale']);
+
+        // Verified fix and upload progress observed disabled in the collected configuration.
+        [, $cleanEvaluation] = $this->evaluateInventory($this->withFpmSessionSettings($inventory, '0', 'php'), $catalog);
+        $clean = $this->assessmentMap($cleanEvaluation)['CVE-2026-115560'];
+        $cleanExposure = $this->factMap($cleanEvaluation)['advisory.CVE-2026-115560.worker-1.configuration_exposure'];
+        // Locally disabled upload progress is not store-wide proof, so it is still not a no-action
+        // verdict; the patch axis stays verified_fixed with its evidence.
+        self::assertSame('verified_fixed', $clean['patch_status']);
+        self::assertSame('needs_investigation', $clean['verdict']);
+        self::assertSame('unknown', $clean['compromise_evidence']['status']);
+        self::assertContains('fact.worker.1.package_provenance', $clean['patch_evidence_ids']);
+        self::assertStringContainsString('other store writers are not collected', $clean['rationale']);
+        self::assertIsArray($cleanExposure);
+        self::assertSame('not_observed', $cleanExposure['state']);
+
+        $risky = $this->withFpmSessionSettings($inventory, '1', 'php_serialize');
+        [, $riskyEvaluation] = $this->evaluateInventory($risky, $catalog);
+        $assessment = $this->assessmentMap($riskyEvaluation)['CVE-2026-115560'];
+        $exposure = $this->factMap($riskyEvaluation)['advisory.CVE-2026-115560.worker-1.configuration_exposure'];
+
+        self::assertSame('needs_investigation', $assessment['verdict']);
+        self::assertSame('verified_fixed', $assessment['patch_status']);
+        self::assertNotSame([], $assessment['patch_evidence_ids']);
+        self::assertNotContains('fact.advisory.CVE-2026-115560.worker-1.configuration_exposure', $assessment['patch_evidence_ids']);
+        self::assertSame('unknown', $assessment['compromise_evidence']['status']);
+        self::assertStringContainsString('does not make an explicitly enabled upload-progress path safe', $assessment['rationale']);
+        self::assertIsArray($exposure);
+        self::assertSame('needs_investigation', $exposure['state']);
+        self::assertIsArray($exposure['derived_from_fact_ids']);
+        self::assertNotSame([], $exposure['derived_from_fact_ids']);
+    }
+
+    public function test_cve_115560_risky_configuration_on_an_unpatched_runtime_keeps_both_axes(): void
+    {
+        $catalog = $this->catalogWithSyntheticNovemberDebianRules('8.2.36-1~deb12u1');
+        $inventory = $this->withFpmSessionSettings($this->collectInventory('synthetic-debian-integrity'), 'On', 'php_binary');
+
+        [, $evaluation] = $this->evaluateInventory($inventory, $catalog);
+        $assessment = $this->assessmentMap($evaluation)['CVE-2026-115560'];
+        $exposure = $this->factMap($evaluation)['advisory.CVE-2026-115560.worker-1.configuration_exposure'];
+
+        // The upgrade action must survive; the configuration finding stays on its own axis.
+        self::assertSame('potentially_affected', $assessment['verdict']);
+        self::assertSame('potentially_affected', $assessment['patch_status']);
+        self::assertNotSame([], $assessment['patch_evidence_ids']);
+        self::assertStringContainsString('also needs investigation', $assessment['rationale']);
+        self::assertIsArray($exposure);
+        self::assertSame('needs_investigation', $exposure['state']);
+    }
+
+    public function test_schema_and_remediation_accept_needs_investigation_with_verified_fixed_patch(): void
+    {
+        $catalog = $this->catalogWithSyntheticNovemberDebianRules();
+        $inventory = $this->withFpmSessionSettings($this->collectInventory('synthetic-debian-integrity'), '1', 'php_serialize');
+        [, $evaluation] = $this->evaluateInventory($inventory, $catalog);
+
+        /** @var RuntimeAuditReport $report */
+        $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+        $records = array_values(array_filter(
+            $report['records'],
+            static fn(array $record): bool => ($record['record_type'] ?? null) === 'assessment'
+                && is_string($record['record_id'] ?? null)
+                && str_contains($record['record_id'], 'CVE-2026-115560:worker-'),
+        ));
+        self::assertCount(1, $records);
+        self::assertSame('needs_investigation', $records[0]['verdict']);
+        self::assertSame('verified_fixed', $records[0]['patch_status']);
+    }
+
+    public function test_cve_115560_disabled_upload_progress_is_not_a_patch_claim(): void
+    {
+        $inventory = $this->withFpmSessionSettings($this->collectInventory('synthetic-debian-integrity'), '0', 'php_serialize');
+
+        [, $evaluation] = $this->evaluateInventory($inventory);
+        $assessment = $this->assessmentMap($evaluation)['CVE-2026-115560'];
+        $exposure = $this->factMap($evaluation)['advisory.CVE-2026-115560.worker-1.configuration_exposure'];
+
+        self::assertSame('unknown', $assessment['verdict']);
+        self::assertSame('unknown', $assessment['patch_status']);
+        self::assertSame([], $assessment['patch_evidence_ids']);
+        self::assertSame('unknown', $assessment['compromise_evidence']['status']);
+        self::assertIsArray($exposure);
+        self::assertSame('not_observed', $exposure['state']);
+    }
+
+    public function test_cve_126714_upload_progress_disabled_does_not_remove_unpatched_exposure(): void
+    {
+        $catalog = $this->catalogWithSyntheticNovemberDebianRules('8.2.36-1~deb12u1');
+        $inventory = $this->withFpmSessionSettings($this->collectInventory('synthetic-debian-integrity'), '0', 'php');
+
+        [, $evaluation] = $this->evaluateInventory($inventory, $catalog);
+        $assessment = $this->assessmentMap($evaluation)['CVE-2026-126714'];
+        $exposure = $this->factMap($evaluation)['advisory.CVE-2026-126714.worker-1.configuration_exposure'];
+
+        self::assertSame('potentially_affected', $assessment['verdict']);
+        self::assertSame('potentially_affected', $assessment['patch_status']);
+        self::assertSame('unknown', $assessment['compromise_evidence']['status']);
+        self::assertIsArray($exposure);
+        self::assertSame('unknown', $exposure['state']);
+        self::assertIsString($exposure['reason']);
+        self::assertStringContainsString('session.save_handler', $exposure['reason']);
+        self::assertSame(['fact.configuration.fpm.session.save_handler'], $exposure['derived_from_fact_ids']);
+    }
+
+    public function test_cve_126714_without_vendor_rule_stays_unknown_despite_upstream_threshold(): void
+    {
+        [, $evaluation] = $this->evaluate('synthetic-debian-integrity');
+        $assessment = $this->assessmentMap($evaluation)['CVE-2026-126714'];
+
+        self::assertSame('unknown', $assessment['verdict']);
+        self::assertSame('unknown', $assessment['patch_status']);
+        self::assertSame([], $assessment['patch_evidence_ids']);
+    }
+
+    /**
+     * Synthetic vendor rules for tests only; the bundled catalog carries no November vendor rules.
+     */
+    private function catalogWithSyntheticNovemberDebianRules(string $fixedVersion = '8.2.35-1~deb12u1'): AdvisoryCatalog
+    {
+        $json = file_get_contents(AdvisoryCatalog::defaultPath());
+        self::assertIsString($json);
+        $data = json_decode($json, true, 32, JSON_THROW_ON_ERROR);
+        self::assertIsArray($data);
+        self::assertIsArray($data['advisories']);
+        foreach ($data['advisories'] as &$advisory) {
+            self::assertIsArray($advisory);
+            if (!in_array($advisory['cve'], ['CVE-2026-115560', 'CVE-2026-126714'], true)) {
+                continue;
+            }
+            $advisory['vendor_rules'] = [[
+                'vendor' => 'debian',
+                'release' => 'bookworm',
+                'package_names' => ['php8.2-fpm'],
+                'fixed_version' => $fixedVersion,
+                'source_url' => 'https://example.invalid/synthetic-test-rule',
+                'revision' => '2026-11-19',
+            ]];
+        }
+        unset($advisory);
+        $path = sys_get_temp_dir() . '/pra-advisory-catalog-' . bin2hex(random_bytes(8)) . '.json';
+        file_put_contents($path, json_encode($data, JSON_THROW_ON_ERROR));
+        try {
+            return AdvisoryCatalog::load($path);
+        } finally {
+            unlink($path);
+        }
+    }
+
+    /**
+     * @phpstan-param RuntimeInventory $inventory
+     * @phpstan-return RuntimeInventory
+     */
+    private function withFpmSessionSettings(array $inventory, string $uploadProgress, string $serializer): array
+    {
+        foreach (['session.upload_progress.enabled' => $uploadProgress, 'session.serialize_handler' => $serializer] as $setting => $value) {
+            $inventory['configuration_by_sapi']['fpm'][$setting] = [
+                'value' => $value,
+                'state' => 'observed',
+                'files' => ['/etc/php/8.2/fpm/php.ini'],
+                'observations' => [[
+                    'value' => $value,
+                    'file' => '/etc/php/8.2/fpm/php.ini',
+                    'context' => 'global',
+                    'configuration_root' => '/etc/php/8.2/fpm',
+                ]],
+            ];
+        }
+
+        return $inventory;
     }
 
     /**
@@ -598,9 +810,9 @@ final class AdvisoryEvaluatorTest extends TestCase
     /** @param RuntimeInventory $inventory
      * @phpstan-return array{RuntimeInventory, AdvisoryEvaluation}
      */
-    private function evaluateInventory(array $inventory): array
+    private function evaluateInventory(array $inventory, ?AdvisoryCatalog $catalog = null): array
     {
-        $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
+        $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, $catalog ?? AdvisoryCatalog::load());
 
         return [$inventory, $evaluation];
     }
