@@ -386,7 +386,7 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertStringContainsString('per-directory overrides', $inactiveAssessment['rationale']);
     }
 
-    public function test_cve_115560_does_not_combine_risk_settings_from_distinct_fpm_pools(): void
+    public function test_cve_115560_distinct_fpm_pools_are_correlated_by_shared_store_not_merged(): void
     {
         $inventory = $this->collectInventory('debian-fpm');
         $inventory['configuration_by_sapi']['fpm']['session.upload_progress.enabled']['observations'][] = [
@@ -405,8 +405,14 @@ final class AdvisoryEvaluatorTest extends TestCase
         [, $evaluation] = $this->evaluateInventory($inventory);
         $assessment = $this->assessmentMap($evaluation)['CVE-2026-115560'];
 
-        self::assertSame('unknown', $assessment['verdict']);
+        // Distinct pools are still never merged into one same-context writer. They are, however,
+        // pools of one install with no save_path, so they may share its default session store
+        // (the advisory: separate pools do not imply separate storage). That shared-store
+        // correlation, not a merged context, is what raises the investigation.
+        self::assertSame('needs_investigation', $assessment['verdict']);
         self::assertSame('unknown', $assessment['patch_status']);
+        self::assertStringContainsString('appear to share its default session location', $assessment['rationale']);
+        self::assertStringNotContainsString('contain upload progress enabled and a serialization handler named', $assessment['rationale']);
     }
 
     public function test_cve_115560_does_not_combine_global_and_pool_settings_from_distinct_php_installs(): void
@@ -657,7 +663,7 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertSame('unknown', $exposure['state']);
         self::assertIsString($exposure['reason']);
         self::assertStringContainsString('session.save_handler', $exposure['reason']);
-        self::assertSame([], $exposure['derived_from_fact_ids']);
+        self::assertSame(['fact.configuration.fpm.session.save_handler'], $exposure['derived_from_fact_ids']);
     }
 
     public function test_cve_126714_without_vendor_rule_stays_unknown_despite_upstream_threshold(): void

@@ -69,6 +69,8 @@ final class AdvisoryCatalogTest extends TestCase
         yield 'pre-release is not a fixed release' => [['8.6' => '8.6.0RC1']];
         yield 'patch-level branch key' => [['8.6.0' => '8.6.0']];
         yield 'leading zero major' => [['08.6' => '08.6.0']];
+        yield 'leading zero minor' => [['8.06' => '8.06.1']];
+        yield 'leading zero patch' => [['8.4' => '8.4.028']];
         yield 'list instead of map' => [['8.6.0']];
     }
 

@@ -207,6 +207,169 @@ final class RuntimeWorkerEvidenceTest extends TestCase
         self::fail('Missing configuration advisory assessment.');
     }
 
+    public function test_session_save_path_credentials_are_never_collected(): void
+    {
+        mkdir($this->root . '/etc/php/8.2/fpm/pool.d', 0777, true);
+        file_put_contents(
+            $this->root . '/etc/php/8.2/fpm/pool.d/stores.conf',
+            "[a]\nphp_admin_value[session.save_handler]=redis\nphp_admin_value[session.save_path]=\"tcp://10.0.0.5:6379?auth=s3cr3t-a&database=2\"\n"
+            . "[b]\nphp_value[session.save_handler]=redis\nphp_value[session.save_path]=\"tcp://10.0.0.5:6379?auth=s3cr3t-a&database=2\"\n"
+            . "[c]\nphp_value[session.save_handler]=redis\nphp_value[session.save_path]=\"tcp://user:pa55@10.0.0.6:6379\"\n"
+            . "[d]\nphp_value[session.save_path]=\"2;/var/lib/php/sessions-d\"\n",
+        );
+        $inventory = $this->collect();
+        $encoded = json_encode($inventory, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+
+        foreach (['s3cr3t', 'pa55', 'auth=', '10.0.0.5', '10.0.0.6', 'user:'] as $secret) {
+            self::assertStringNotContainsString($secret, $encoded);
+        }
+        $byContext = [];
+        foreach ($inventory['configuration_by_sapi']['fpm']['session.save_path']['observations'] as $observation) {
+            $byContext[$observation['context']] = $observation['value'];
+        }
+        self::assertStringStartsWith('redacted:tcp:', $byContext['pool:a']);
+        self::assertSame($byContext['pool:a'], $byContext['pool:b']);
+        self::assertNotSame($byContext['pool:a'], $byContext['pool:c']);
+        self::assertSame('2;/var/lib/php/sessions-d', $byContext['pool:d']);
+        self::assertSame('observed', $inventory['configuration_by_sapi']['fpm']['session.save_handler']['state']);
+        self::assertSame('redis', $inventory['configuration_by_sapi']['fpm']['session.save_handler']['value']);
+    }
+
+    /** @return iterable<string, array{string, string, string}> */
+    public static function crossInstallStores(): iterable
+    {
+        yield 'explicitly shared store' => ['/var/lib/php/shared', '/var/lib/php/shared', 'needs_investigation'];
+        yield 'isolated stores' => ['/var/lib/php/app-a', '/var/lib/php/app-b', 'unknown'];
+        yield 'both default locations of different installs' => ['', '', 'unknown'];
+    }
+
+    /** @return iterable<string, array{string, string}> */
+    public static function sharedStoreSerializerPairs(): iterable
+    {
+        yield 'igbinary writer, php reader' => ['igbinary', 'php'];
+        yield 'php writer, php_serialize reader' => ['php', 'php_serialize'];
+    }
+
+    #[DataProvider('sharedStoreSerializerPairs')]
+    public function test_any_serializer_difference_on_a_shared_store_requests_investigation(string $writerSerializer, string $readerSerializer): void
+    {
+        mkdir($this->root . '/usr/local/etc/php-fpm.d', 0777, true);
+        file_put_contents(
+            $this->root . '/usr/local/etc/php-fpm.d/writer.conf',
+            "[writer]\nphp_admin_flag[session.upload_progress.enabled]=on\nphp_admin_value[session.serialize_handler]=" . $writerSerializer
+            . "\nphp_admin_value[session.save_path]=/var/lib/php/shared\n",
+        );
+        mkdir($this->root . '/etc/php/8.2/fpm/pool.d', 0777, true);
+        file_put_contents(
+            $this->root . '/etc/php/8.2/fpm/pool.d/www.conf',
+            "[www]\nphp_admin_value[session.serialize_handler]=" . $readerSerializer . "\nphp_admin_value[session.save_path]=/var/lib/php/shared\n",
+        );
+        $inventory = $this->collect();
+        self::assertContains('on', array_column($inventory['configuration_by_sapi']['fpm']['session.upload_progress.enabled']['observations'], 'value'));
+
+        foreach ((new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load())['assessments'] as $assessment) {
+            if (str_contains($assessment['record_id'], 'CVE-2026-115560')
+                && str_starts_with($assessment['subject_id'], 'worker-')) {
+                self::assertSame('needs_investigation', $assessment['verdict']);
+                self::assertStringContainsString('configure the same session store', $assessment['rationale']);
+
+                return;
+            }
+        }
+        self::fail('Missing configuration advisory assessment.');
+    }
+
+    #[DataProvider('crossInstallStores')]
+    public function test_cross_install_session_store_correlation(string $writerPath, string $readerPath, string $expected): void
+    {
+        // Writer: a separate PHP install's pool enables upload progress with php_serialize.
+        mkdir($this->root . '/usr/local/etc/php-fpm.d', 0777, true);
+        file_put_contents(
+            $this->root . '/usr/local/etc/php-fpm.d/writer.conf',
+            "[writer]\nphp_admin_value[session.upload_progress.enabled]=1\nphp_admin_value[session.serialize_handler]=php_serialize\n"
+            . ($writerPath === '' ? '' : "php_admin_value[session.save_path]=" . $writerPath . "\n"),
+        );
+        // Reader: the audited 8.2 worker keeps the php serializer from its php.ini.
+        mkdir($this->root . '/etc/php/8.2/fpm/pool.d', 0777, true);
+        file_put_contents(
+            $this->root . '/etc/php/8.2/fpm/pool.d/www.conf',
+            "[www]\n" . ($readerPath === '' ? '' : "php_admin_value[session.save_path]=" . $readerPath . "\n") . "pm=dynamic\n",
+        );
+        $evaluation = (new AdvisoryEvaluator())->evaluate($this->collect(), AdvisoryCatalog::load());
+
+        foreach ($evaluation['assessments'] as $assessment) {
+            if (str_contains($assessment['record_id'], 'CVE-2026-115560')
+                && str_starts_with($assessment['subject_id'], 'worker-')) {
+                self::assertSame($expected, $assessment['verdict']);
+                self::assertSame('unknown', $assessment['patch_status']);
+                if ($expected === 'needs_investigation') {
+                    self::assertStringContainsString('configure the same session store', $assessment['rationale']);
+                    self::assertStringContainsString('register their own save handler', $assessment['rationale']);
+                }
+                $exposure = null;
+                foreach ($evaluation['facts'] as $fact) {
+                    if (str_starts_with($fact['key'], 'advisory.CVE-2026-115560.worker-') && str_ends_with($fact['key'], '.configuration_exposure')) {
+                        $exposure = $fact['value'];
+                    }
+                }
+                self::assertIsArray($exposure);
+                // The audited worker's own php.ini disables upload progress; without a shared-store
+                // match that is only "not observed", which never clears a verdict.
+                self::assertSame($expected === 'needs_investigation' ? 'needs_investigation' : 'not_observed', $exposure['state']);
+
+                return;
+            }
+        }
+        self::fail('Missing configuration advisory assessment.');
+    }
+
+    public function test_yes_counts_as_an_enabled_upload_progress_value(): void
+    {
+        file_put_contents($this->root . '/etc/php/8.2/fpm/php.ini', "session.upload_progress.enabled = Yes \nsession.serialize_handler=php_binary\n");
+        foreach ((new AdvisoryEvaluator())->evaluate($this->collect(), AdvisoryCatalog::load())['assessments'] as $assessment) {
+            if (str_contains($assessment['record_id'], 'CVE-2026-115560')
+                && str_starts_with($assessment['subject_id'], 'worker-')) {
+                self::assertSame('needs_investigation', $assessment['verdict']);
+
+                return;
+            }
+        }
+        self::fail('Missing configuration advisory assessment.');
+    }
+
+    /** @return iterable<string, array{string, string}> */
+    public static function sessionBackends(): iterable
+    {
+        yield 'files backend configured' => ["session.save_handler = files\n", 'needs_investigation'];
+        yield 'other backend configured' => ["session.save_handler = redis\n", 'unknown'];
+        yield 'backend unset' => ['', 'unknown'];
+    }
+
+    #[DataProvider('sessionBackends')]
+    public function test_cve_126714_exposure_follows_the_configured_backend_without_changing_the_verdict(string $line, string $expectedState): void
+    {
+        file_put_contents($this->root . '/etc/php/8.2/fpm/php.ini', "session.upload_progress.enabled=0\nsession.serialize_handler=php\n" . $line);
+        $evaluation = (new AdvisoryEvaluator())->evaluate($this->collect(), AdvisoryCatalog::load());
+
+        $state = null;
+        foreach ($evaluation['facts'] as $fact) {
+            if (str_starts_with($fact['key'], 'advisory.CVE-2026-126714.worker-') && str_ends_with($fact['key'], '.configuration_exposure')
+                && is_array($fact['value'])) {
+                $state = $fact['value']['state'];
+                self::assertIsString($fact['value']['reason']);
+                self::assertStringContainsString('register their own save handler', $fact['value']['reason']);
+            }
+        }
+        self::assertSame($expectedState, $state);
+        foreach ($evaluation['assessments'] as $assessment) {
+            if (str_contains($assessment['record_id'], 'CVE-2026-126714')
+                && str_starts_with($assessment['subject_id'], 'worker-')) {
+                // No vendor rule is bundled: the verdict stays patch-driven and unknown.
+                self::assertSame('unknown', $assessment['verdict']);
+            }
+        }
+    }
+
     public function test_docker_main_fpm_configuration_is_scoped_to_fpm(): void
     {
         mkdir($this->root . '/usr/local/etc', 0777, true);

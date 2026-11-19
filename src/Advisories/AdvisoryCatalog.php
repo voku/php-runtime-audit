@@ -99,8 +99,8 @@ final readonly class AdvisoryCatalog
         foreach ($fixedUpstream as $branch => $version) {
             // Branch support is data, not code: any major.minor branch is accepted as long as
             // its fixed version is a final release (no pre-release suffix) on that same branch.
-            if (!is_string($branch) || preg_match('/\A[1-9][0-9]?\.[0-9]{1,2}\z/', $branch) !== 1
-                || !is_string($version) || preg_match('/\A[0-9]+\.[0-9]+\.[0-9]+\z/', $version) !== 1
+            if (!is_string($branch) || preg_match('/\A[1-9][0-9]?\.(?:0|[1-9][0-9]?)\z/', $branch) !== 1
+                || !is_string($version) || preg_match('/\A[1-9][0-9]*\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\z/', $version) !== 1
                 || !str_starts_with($version, $branch . '.')) {
                 throw new InvalidArgumentException('Upstream fixed-version entry is invalid.');
             }

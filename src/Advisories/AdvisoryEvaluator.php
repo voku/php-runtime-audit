@@ -19,11 +19,16 @@ use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
  * @phpstan-type AdvisorySource array{source_id: string, kind: 'vendor_advisory'|'other', locator: string, captured_at: string, captured_digest: string|null, current_digest: null, freshness: 'unknown'}
  * @phpstan-type AdvisoryFact array{fact_id: string, key: string, value: mixed, source_id: string}
  * @phpstan-type AdvisoryAssessment array{record_type: 'assessment', schema_version: '1.0', record_id: string, subject_id: string, assessed_at: string, verdict: string, patch_status: string, patch_evidence_ids: list<string>, compromise_evidence: array{status: 'unknown', evidence_ids: list<string>}, rationale: string}
- * @phpstan-type AssessmentBasis array{verdict: string, patch_status: string, reason: string, configuration_exposure: array{state: string, reason: string}|null}
+ * @phpstan-type AssessmentBasis array{verdict: string, patch_status: string, reason: string, configuration_exposure: array{state: string, reason: string, derived_from_fact_ids: list<string>, observed_files: list<string>}|null}
  * @phpstan-type AdvisoryEvaluation array{sources: list<AdvisorySource>, facts: list<AdvisoryFact>, assessments: list<AdvisoryAssessment>}
  */
 final class AdvisoryEvaluator
 {
+    /** PHP ini boolean spellings (case-insensitive, trimmed). */
+    private const INI_TRUE_VALUES = ['1', 'on', 'true', 'yes'];
+    private const INI_FALSE_VALUES = ['0', 'off', 'false', 'no', 'none', ''];
+    private const WEB_SAPIS = ['fpm', 'apache2'];
+
     /**
      * @phpstan-param RuntimeInventory $inventory
      * @phpstan-return AdvisoryEvaluation
@@ -139,9 +144,8 @@ final class AdvisoryEvaluator
                             'state' => $basis['configuration_exposure']['state'],
                             'reason' => $basis['configuration_exposure']['reason'],
                             'independent_of' => ['patch_status', 'compromise_evidence'],
-                            'derived_from_fact_ids' => $advisory['cve'] === 'CVE-2026-115560'
-                                ? $this->configurationFactIds($inventory, $target)
-                                : [],
+                            'derived_from_fact_ids' => $basis['configuration_exposure']['derived_from_fact_ids'],
+                            'observed_files' => $basis['configuration_exposure']['observed_files'],
                         ],
                         $mainSourceId,
                     );
@@ -459,11 +463,11 @@ final class AdvisoryEvaluator
         array $secondExpected,
     ): bool {
         foreach ($firstSetting['observations'] as $firstObservation) {
-            if (!in_array(strtolower($firstObservation['value']), $firstExpected, true)) {
+            if (!in_array(strtolower(trim($firstObservation['value'])), $firstExpected, true)) {
                 continue;
             }
             foreach ($secondSetting['observations'] as $secondObservation) {
-                if (!in_array(strtolower($secondObservation['value']), $secondExpected, true)) {
+                if (!in_array(strtolower(trim($secondObservation['value'])), $secondExpected, true)) {
                     continue;
                 }
                 if ($firstObservation['configuration_root'] === null
@@ -585,19 +589,40 @@ final class AdvisoryEvaluator
         // turn an unknown or verified_fixed verdict into needs_investigation.
         $patch = $this->patchAssessment($inventory, $target, $rule);
 
+        $configurationSapi = match ($target['kind']) {
+            'fpm' => 'fpm',
+            'apache-mod-php' => 'apache2',
+            default => null,
+        };
+
         if ($advisory['cve'] === 'CVE-2026-126714') {
+            $handlerSetting = $configurationSapi === null
+                ? ['value' => null, 'state' => 'unknown', 'files' => [], 'observations' => []]
+                : $this->configurationForTarget(
+                    $inventory['configuration_by_sapi'][$configurationSapi]['session.save_handler'],
+                    $target,
+                    $inventory,
+                );
+            $filesConfigured = $handlerSetting['state'] === 'observed'
+                && is_string($handlerSetting['value'])
+                && strtolower(trim($handlerSetting['value'])) === 'files';
+            $caveat = ' Applications can register their own save handler (session_set_save_handler or framework session storage), which overrides session.save_handler, and disabling upload progress is only a partial measure because applications can store untrusted data in file-backed sessions independently.';
+
             return $patch + ['configuration_exposure' => [
-                'state' => 'unknown',
-                'reason' => 'session.save_handler and session.save_path are not collected, so whether this runtime uses the affected files backend is unverified. Disabling upload progress is only a partial measure: applications can store untrusted data in file-backed sessions independently.',
+                // Configuration can point at the affected backend but can never rule it out.
+                'state' => $filesConfigured ? 'needs_investigation' : 'unknown',
+                'reason' => ($filesConfigured
+                    ? 'The inspected configuration selects the affected files session backend for this runtime.'
+                    : ($configurationSapi === null
+                        ? 'No PHP web runtime was identified for this subject.'
+                        : 'The inspected configuration does not establish a non-files session backend for this runtime (PHP defaults to files when session.save_handler is unset).'))
+                    . $caveat,
+                'derived_from_fact_ids' => $this->configurationFactIds($inventory, $configurationSapi, ['session.save_handler']),
+                'observed_files' => $handlerSetting['files'],
             ]];
         }
 
         if ($advisory['cve'] === 'CVE-2026-115560') {
-            $configurationSapi = match ($target['kind']) {
-                'fpm' => 'fpm',
-                'apache-mod-php' => 'apache2',
-                default => null,
-            };
             $knownWebRuntime = $configurationSapi !== null;
             $settingsObserved = false;
             $uploadSetting = ['value' => null, 'state' => 'unknown', 'files' => [], 'observations' => []];
@@ -620,22 +645,28 @@ final class AdvisoryEvaluator
             // is not store-wide proof and never clears a verified fix into a no-action verdict.
             $uploadProgressDisabled = $settingsObserved
                 && is_string($uploadSetting['value'])
-                && in_array(strtolower(trim($uploadSetting['value'])), ['0', 'off', 'false', 'no', ''], true);
-            $riskConfiguration = $knownWebRuntime
+                && in_array(strtolower(trim($uploadSetting['value'])), self::INI_FALSE_VALUES, true);
+            $sameContextRisk = $knownWebRuntime
                 && $this->hasCooccurringConfigurationObservations(
                     $uploadSetting,
-                    ['1', 'on', 'true'],
+                    self::INI_TRUE_VALUES,
                     $serializeSetting,
                     ['php_binary', 'php_serialize'],
                 );
-            if ($riskConfiguration) {
+            $sharedStoreMismatch = $configurationSapi === null || $sameContextRisk
+                ? null
+                : $this->sharedStoreSerializerMismatch($inventory, $configurationSapi, $target);
+            $riskConfiguration = $sameContextRisk || $sharedStoreMismatch !== null;
+            if ($sameContextRisk) {
                 $reason = 'One or more inspected web-SAPI configuration sources contain upload progress enabled and a serialization handler named in the advisory; precedence, per-pool applicability, application code, request path, and runtime handler changes remain unverified.';
+            } elseif ($sharedStoreMismatch !== null) {
+                $reason = $sharedStoreMismatch;
             } elseif (!$knownWebRuntime) {
                 $reason = 'No PHP web runtime was identified; configuration alone cannot establish that the described path is reachable.';
             } elseif (!$settingsObserved) {
                 $reason = 'Relevant configuration is missing or conflicting; .user.ini or Apache per-directory overrides and application code changes are not observed.';
             } elseif (!$uploadProgressDisabled) {
-                $reason = 'Upload progress is enabled for this runtime. Its own serialization handler is not one named in the advisory, but other readers and writers of the same session store (session.save_path, other pools or applications) are not collected, so a cross-store serializer mismatch cannot be excluded.';
+                $reason = 'Upload progress is enabled in the inspected configuration without an observed same-context or shared-store serializer mismatch, but applications can register their own save handler or store, and readers or writers outside the inspected configuration are not collected, so a cross-store serializer mismatch cannot be excluded.';
             } else {
                 $reason = 'Inspected configuration has upload progress disabled, but administrative scope (php_admin_value), .user.ini or Apache per-directory overrides, other writers of the same session store, and application code are not established; applicability remains unknown.';
             }
@@ -645,6 +676,14 @@ final class AdvisoryEvaluator
                     ? 'needs_investigation'
                     : ($knownWebRuntime && $uploadProgressDisabled ? 'not_observed' : 'unknown'),
                 'reason' => $reason,
+                'derived_from_fact_ids' => $this->configurationFactIds(
+                    $inventory,
+                    $configurationSapi,
+                    $sharedStoreMismatch !== null
+                        ? ['session.upload_progress.enabled', 'session.serialize_handler', 'session.save_handler', 'session.save_path']
+                        : ['session.upload_progress.enabled', 'session.serialize_handler'],
+                ),
+                'observed_files' => array_values(array_unique([...$uploadSetting['files'], ...$serializeSetting['files']])),
             ];
             if ($riskConfiguration && $patch['patch_status'] === 'potentially_affected') {
                 // Keep the upgrade action: remediation is driven by the verdict, so an unpatched
@@ -916,31 +955,134 @@ final class AdvisoryEvaluator
     }
 
     /**
-     * Inventory facts the configuration-exposure judgment for this target was derived from.
+     * Inventory facts a configuration-exposure judgment was derived from. Shared-store
+     * correlation reads every web SAPI, so it cites both SAPIs' facts for those settings.
      *
      * @phpstan-param RuntimeInventory $inventory
-     * @phpstan-param RuntimeTarget $target
+     * @param list<string> $settings
      * @return list<string>
      */
-    private function configurationFactIds(array $inventory, array $target): array
+    private function configurationFactIds(array $inventory, ?string $sapi, array $settings): array
     {
-        $sapi = match ($target['kind']) {
-            'fpm' => 'fpm',
-            'apache-mod-php' => 'apache2',
-            default => null,
-        };
         if ($sapi === null) {
             return [];
         }
+        $sapis = array_intersect($settings, ['session.save_handler', 'session.save_path']) !== [] && count($settings) > 1
+            ? self::WEB_SAPIS
+            : [$sapi];
         $ids = [];
-        foreach (['session.upload_progress.enabled', 'session.serialize_handler'] as $setting) {
-            $id = $this->factId($inventory['facts'], 'configuration.' . $sapi . '.' . $setting);
-            if ($id !== null) {
-                $ids[] = $id;
+        foreach ($sapis as $factSapi) {
+            foreach ($settings as $setting) {
+                $id = $this->factId($inventory['facts'], 'configuration.' . $factSapi . '.' . $setting);
+                if ($id !== null) {
+                    $ids[] = $id;
+                }
             }
         }
 
         return $ids;
+    }
+
+    /**
+     * Correlate session stores across web contexts (FPM pools, per-root globals, Apache).
+     * A context's effective value is its own observation, else its root's global value, else
+     * PHP's default. Contexts whose configured store matches (or that all use the default
+     * location) and whose serializers differ, while at least one of them explicitly enables
+     * upload progress, are reported. This is a correlation hint from configuration files only:
+     * a match raises an investigation, a non-match never clears anything.
+     *
+     * @phpstan-param RuntimeInventory $inventory
+     * @phpstan-param RuntimeTarget $target
+     */
+    private function sharedStoreSerializerMismatch(array $inventory, string $targetSapi, array $target): ?string
+    {
+        $settings = ['session.upload_progress.enabled', 'session.serialize_handler', 'session.save_handler', 'session.save_path'];
+        $targetRoots = [];
+        foreach ($settings as $setting) {
+            $selected = $this->configurationForTarget($inventory['configuration_by_sapi'][$targetSapi][$setting], $target, $inventory);
+            foreach ($selected['observations'] as $observation) {
+                if (is_string($observation['configuration_root'])) {
+                    $targetRoots[$observation['configuration_root']] = true;
+                }
+            }
+        }
+        if ($targetRoots === []) {
+            return null;
+        }
+
+        // values[sapi][root][context][setting] = list of observed values
+        $values = [];
+        foreach (['fpm', 'apache2'] as $sapi) {
+            $sapiSettings = $inventory['configuration_by_sapi'][$sapi];
+            foreach ($settings as $setting) {
+                foreach ($sapiSettings[$setting]['observations'] as $observation) {
+                    if (!is_string($observation['configuration_root'])) {
+                        continue;
+                    }
+                    $values[$sapi][$observation['configuration_root']][$observation['context']][$setting][] = trim($observation['value']);
+                }
+            }
+        }
+
+        $groups = [];
+        foreach ($values as $sapi => $roots) {
+            foreach ($roots as $root => $contexts) {
+                $global = $contexts['global'] ?? [];
+                $contextNames = array_keys($contexts);
+                if (count($contextNames) > 1) {
+                    // With pools present, the global section is inherited, not a serving context.
+                    $contextNames = array_values(array_filter($contextNames, static fn($name): bool => $name !== 'global'));
+                }
+                foreach ($contextNames as $context) {
+                    $effective = [];
+                    foreach ($settings as $setting) {
+                        $observed = array_values(array_unique($contexts[$context][$setting] ?? $global[$setting] ?? []));
+                        if (count($observed) > 1) {
+                            continue 2; // conflicting values: this context cannot be judged.
+                        }
+                        $effective[$setting] = $observed[0] ?? null;
+                    }
+                    $handler = strtolower($effective['session.save_handler'] ?? 'files');
+                    $path = $effective['session.save_path'];
+                    // An unset save_path resolves to a build-specific default, so it is only treated
+                    // as shared within one install (configuration root and SAPI). Across installs a
+                    // shared store needs an explicitly equal configured value.
+                    $store = $path === null || $path === ''
+                        ? $handler . "\0default\0" . $sapi . "\0" . $root
+                        : $handler . "\0" . $path;
+                    $groups[$store][] = [
+                        'label' => $sapi . ':' . $root . ':' . $context,
+                        'is_target' => $sapi === $targetSapi && isset($targetRoots[(string) $root]),
+                        'upload_enabled' => in_array(strtolower((string) $effective['session.upload_progress.enabled']), self::INI_TRUE_VALUES, true),
+                        'serializer' => strtolower($effective['session.serialize_handler'] ?? 'php'),
+                        'default_location' => $path === null || $path === '',
+                    ];
+                }
+            }
+        }
+
+        foreach ($groups as $members) {
+            // The advisory requires identical serializers for every reader and writer of a
+            // shared store while upload progress is enabled, so any difference is reported.
+            $writers = array_filter($members, static fn(array $member): bool => $member['upload_enabled']);
+            if ($writers === [] || count(array_unique(array_column($members, 'serializer'))) < 2
+                || !in_array(true, array_column($members, 'is_target'), true)) {
+                continue;
+            }
+            $labels = array_slice(array_map(
+                static fn(array $member): string => $member['label'] . ' (serializer ' . $member['serializer'] . ($member['upload_enabled'] ? ', upload progress enabled' : '') . ')',
+                $members,
+            ), 0, 8);
+            $sharing = $members[0]['default_location']
+                ? 'of one PHP install appear to share its default session location (session.save_path unset; separate pools do not imply separate storage)'
+                : 'configure the same session store';
+
+            return 'Inspected web contexts ' . $sharing . ' with different serialization handlers while upload progress is explicitly enabled in at least one of them; the advisory requires identical handlers for every reader and writer of the store: '
+                . implode('; ', $labels)
+                . '. This comes from configuration files only; applications can register their own save handler or store, and precedence and per-directory overrides remain unverified.';
+        }
+
+        return null;
     }
 
     /** @phpstan-param list<RuntimeFact> $facts */
