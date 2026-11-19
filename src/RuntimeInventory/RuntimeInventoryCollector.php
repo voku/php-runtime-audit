@@ -1262,8 +1262,9 @@ final class RuntimeInventoryCollector
                 continue;
             }
             $value = trim($rawValue);
-            if (strlen($value) >= 2 && (($value[0] === '"' && str_ends_with($value, '"')) || ($value[0] === "'" && str_ends_with($value, "'")))) {
-                $value = substr($value, 1, -1);
+            if (preg_match('/\A(["\'])(.*?)\1\s*(?:[;#].*)?\z/', $value, $quoted) === 1) {
+                // A quoted value may be followed by an inline comment.
+                $value = $quoted[2];
             } else {
                 $value = trim(preg_split('/[;#]/', $value, 2)[0] ?? $value);
             }

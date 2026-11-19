@@ -8,6 +8,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use voku\PhpRuntimeAudit\Advisories\AdvisoryCatalog;
 use voku\PhpRuntimeAudit\Advisories\AdvisoryEvaluator;
+use voku\PhpRuntimeAudit\Advisories\RuntimeAuditReportBuilder;
 use voku\PhpRuntimeAudit\RuntimeInventory\FixtureProcessRunner;
 use voku\PhpRuntimeAudit\RuntimeInventory\DiscoveredPhpCommand;
 use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
@@ -137,8 +138,14 @@ final class RuntimeWorkerEvidenceTest extends TestCase
         self::assertSame('8.2.35', $workerVersions[123][1]);
         self::assertSame('7.4.33', $workerVersions[124][1]);
         self::assertNotSame($workerVersions[123][0], $workerVersions[124][0]);
-        self::assertSame('unknown', $assessments[$workerVersions[123][0]]['verdict']);
+        // The 7.4 worker's own configuration is risky. The 8.2 worker's is not, and nothing is
+        // merged into its context; both are Debian/sury packages sharing /var/lib/php/sessions by
+        // default, so only the shared-store correlation raises it.
+        self::assertSame('needs_investigation', $assessments[$workerVersions[123][0]]['verdict']);
+        self::assertStringContainsString('appear to share one default session location', $assessments[$workerVersions[123][0]]['rationale']);
+        self::assertStringNotContainsString('contain upload progress enabled and a serialization handler named', $assessments[$workerVersions[123][0]]['rationale']);
         self::assertSame('needs_investigation', $assessments[$workerVersions[124][0]]['verdict']);
+        self::assertStringContainsString('contain upload progress enabled and a serialization handler named', $assessments[$workerVersions[124][0]]['rationale']);
         self::assertSame('unknown', $assessments[$workerVersions[123][0]]['patch_status']);
         self::assertSame('unknown', $assessments[$workerVersions[124][0]]['patch_status']);
     }
@@ -343,6 +350,69 @@ final class RuntimeWorkerEvidenceTest extends TestCase
         self::fail('Missing configuration advisory assessment.');
     }
 
+    public function test_debian_apache_and_fpm_share_the_packaged_default_session_store(): void
+    {
+        mkdir($this->root . '/etc/php/8.2/apache2', 0777, true);
+        file_put_contents($this->root . '/etc/php/8.2/apache2/php.ini', "session.upload_progress.enabled=1\nsession.serialize_handler=php_serialize\n");
+
+        foreach ((new AdvisoryEvaluator())->evaluate($this->collect(), AdvisoryCatalog::load())['assessments'] as $assessment) {
+            if (str_contains($assessment['record_id'], 'CVE-2026-115560')
+                && str_starts_with($assessment['subject_id'], 'worker-')) {
+                self::assertSame('needs_investigation', $assessment['verdict']);
+                self::assertStringContainsString('apache2:/etc/php/8.2/apache2', $assessment['rationale']);
+
+                return;
+            }
+        }
+        self::fail('Missing configuration advisory assessment.');
+    }
+
+    public function test_non_ascii_pool_names_cannot_break_report_encoding(): void
+    {
+        mkdir($this->root . '/etc/php/8.2/fpm/pool.d', 0777, true);
+        $pools = '';
+        for ($index = 0; $index < 12; ++$index) {
+            $pools .= '[' . str_repeat('é', 40) . $index . "]\nphp_admin_value[session.upload_progress.enabled]=" . ($index % 2) . "\nphp_admin_value[session.serialize_handler]=" . ($index % 2 === 0 ? 'php' : 'igbinary') . "\nphp_admin_value[session.save_path]=/var/lib/php/shared\n";
+        }
+        file_put_contents($this->root . '/etc/php/8.2/fpm/pool.d/many.conf', $pools);
+        $inventory = $this->collect();
+        $evaluation = (new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load());
+
+        $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+        self::assertNotEmpty($report['records']);
+        foreach ($evaluation['assessments'] as $assessment) {
+            self::assertSame(1, preg_match('//u', $assessment['rationale']));
+            self::assertLessThanOrEqual(1999, strlen($assessment['rationale']));
+        }
+    }
+
+    public function test_cve_126714_global_files_backend_is_not_hidden_by_a_pool_override(): void
+    {
+        file_put_contents($this->root . '/etc/php/8.2/fpm/php.ini', "session.upload_progress.enabled=0\nsession.serialize_handler=php\nsession.save_handler=files\n");
+        mkdir($this->root . '/etc/php/8.2/fpm/pool.d', 0777, true);
+        file_put_contents($this->root . '/etc/php/8.2/fpm/pool.d/www.conf', "[www]\nphp_admin_value[session.save_handler]=redis\n");
+        $evaluation = (new AdvisoryEvaluator())->evaluate($this->collect(), AdvisoryCatalog::load());
+
+        foreach ($evaluation['facts'] as $fact) {
+            if (str_starts_with($fact['key'], 'advisory.CVE-2026-126714.worker-') && str_ends_with($fact['key'], '.configuration_exposure')
+                && is_array($fact['value'])) {
+                self::assertSame('needs_investigation', $fact['value']['state']);
+
+                return;
+            }
+        }
+        self::fail('Missing CVE-2026-126714 exposure fact.');
+    }
+
+    public function test_quoted_values_with_inline_comments_are_unquoted(): void
+    {
+        file_put_contents($this->root . '/etc/php/8.2/fpm/php.ini', "session.serialize_handler = \"php_serialize\" ; site default\nsession.save_path = \"/var/lib/php/shared\" # shared\n");
+        $inventory = $this->collect();
+
+        self::assertSame('php_serialize', $inventory['configuration_by_sapi']['fpm']['session.serialize_handler']['value']);
+        self::assertSame('/var/lib/php/shared', $inventory['configuration_by_sapi']['fpm']['session.save_path']['value']);
+    }
+
     public function test_yes_counts_as_an_enabled_upload_progress_value(): void
     {
         file_put_contents($this->root . '/etc/php/8.2/fpm/php.ini', "session.upload_progress.enabled = Yes \nsession.serialize_handler=php_binary\n");
@@ -529,8 +599,12 @@ final class RuntimeWorkerEvidenceTest extends TestCase
         );
         foreach ((new AdvisoryEvaluator())->evaluate($inventory, AdvisoryCatalog::load())['assessments'] as $assessment) {
             if (str_contains($assessment['record_id'], 'CVE-2026-115560')) {
-                self::assertSame('unknown', $assessment['verdict']);
+                // Not merged into one context, but both Debian installs share the packaged default
+                // session store, where the serializers differ while 8.3 enables upload progress.
+                self::assertSame('needs_investigation', $assessment['verdict']);
                 self::assertSame('unknown', $assessment['patch_status']);
+                self::assertStringContainsString('appear to share one default session location', $assessment['rationale']);
+                self::assertStringNotContainsString('contain upload progress enabled and a serialization handler named', $assessment['rationale']);
                 return;
             }
         }

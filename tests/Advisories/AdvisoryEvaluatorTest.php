@@ -411,11 +411,11 @@ final class AdvisoryEvaluatorTest extends TestCase
         // correlation, not a merged context, is what raises the investigation.
         self::assertSame('needs_investigation', $assessment['verdict']);
         self::assertSame('unknown', $assessment['patch_status']);
-        self::assertStringContainsString('appear to share its default session location', $assessment['rationale']);
+        self::assertStringContainsString('appear to share one default session location', $assessment['rationale']);
         self::assertStringNotContainsString('contain upload progress enabled and a serialization handler named', $assessment['rationale']);
     }
 
-    public function test_cve_115560_does_not_combine_global_and_pool_settings_from_distinct_php_installs(): void
+    public function test_cve_115560_distinct_debian_installs_correlate_only_through_the_shared_default_store(): void
     {
         $inventory = $this->collectInventory('debian-fpm');
         $inventory['configuration_by_sapi']['fpm']['session.upload_progress.enabled']['observations'][] = [
@@ -434,8 +434,14 @@ final class AdvisoryEvaluatorTest extends TestCase
         [, $evaluation] = $this->evaluateInventory($inventory);
         $assessment = $this->assessmentMap($evaluation)['CVE-2026-115560'];
 
-        self::assertSame('unknown', $assessment['verdict']);
+        // Settings of distinct installs are never merged into one same-context writer. Both roots
+        // are Debian packages, though, which share /var/lib/php/sessions by default, so the
+        // shared-store correlation (8.3 enables upload progress with php, 8.2 reads with
+        // php_binary) raises the investigation.
+        self::assertSame('needs_investigation', $assessment['verdict']);
         self::assertSame('unknown', $assessment['patch_status']);
+        self::assertStringContainsString('appear to share one default session location', $assessment['rationale']);
+        self::assertStringNotContainsString('contain upload progress enabled and a serialization handler named', $assessment['rationale']);
     }
 
     public function test_cve_115560_does_not_combine_settings_when_configuration_root_is_unknown(): void

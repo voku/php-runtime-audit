@@ -603,16 +603,20 @@ final class AdvisoryEvaluator
                     $target,
                     $inventory,
                 );
-            $filesConfigured = $handlerSetting['state'] === 'observed'
-                && is_string($handlerSetting['value'])
-                && strtolower(trim($handlerSetting['value'])) === 'files';
+            // Any observed files selection for this runtime (including a global value that pools
+            // may inherit while another pool overrides it) is enough to ask for investigation.
+            $filesConfigured = in_array(
+                'files',
+                array_map(static fn(array $observation): string => strtolower(trim($observation['value'])), $handlerSetting['observations']),
+                true,
+            );
             $caveat = ' Applications can register their own save handler (session_set_save_handler or framework session storage), which overrides session.save_handler, and disabling upload progress is only a partial measure because applications can store untrusted data in file-backed sessions independently.';
 
             return $patch + ['configuration_exposure' => [
                 // Configuration can point at the affected backend but can never rule it out.
                 'state' => $filesConfigured ? 'needs_investigation' : 'unknown',
                 'reason' => ($filesConfigured
-                    ? 'The inspected configuration selects the affected files session backend for this runtime.'
+                    ? 'The inspected configuration selects the affected files session backend for this runtime or for some of its pools.'
                     : ($configurationSapi === null
                         ? 'No PHP web runtime was identified for this subject.'
                         : 'The inspected configuration does not establish a non-files session backend for this runtime (PHP defaults to files when session.save_handler is unset).'))
@@ -915,7 +919,13 @@ final class AdvisoryEvaluator
             : ' Advisory mitigation guidance: ' . implode('; ', $guidance) . '. These measures are path-specific and do not establish a fixed patch or absence of compromise.';
         $rationale = $basis['reason'] . $version . $package . $source . $mitigations;
 
-        return substr($rationale, 0, 1999);
+        $rationale = substr($rationale, 0, 1999);
+        // Never end inside a multibyte character: invalid UTF-8 would abort report encoding.
+        for ($trim = 0; $trim < 3 && preg_match('//u', $rationale) !== 1; ++$trim) {
+            $rationale = substr($rationale, 0, -1);
+        }
+
+        return preg_match('//u', $rationale) === 1 ? $rationale : (string) preg_replace('/[^\x20-\x7E]/', '?', $rationale);
     }
 
     /**
@@ -981,6 +991,20 @@ final class AdvisoryEvaluator
         }
 
         return $ids;
+    }
+
+    /**
+     * Debian/Ubuntu PHP packages of every version and SAPI (/etc/php/X.Y/{fpm,apache2}) are built
+     * with the same default session.save_path (/var/lib/php/sessions), so they share one default
+     * store. Other installs (source builds, containers, RHEL/Remi) keep a per-install default.
+     */
+    private function defaultSessionStoreFamily(string $sapi, string $root): string
+    {
+        if (preg_match('#\A/etc/php/[0-9]+\.[0-9]+/(?:fpm|apache2)\z#', $root) === 1) {
+            return 'debian-packaged';
+        }
+
+        return $sapi . "\0" . $root;
     }
 
     /**
@@ -1053,10 +1077,11 @@ final class AdvisoryEvaluator
                     // as shared within one install (configuration root and SAPI). Across installs a
                     // shared store needs an explicitly equal configured value.
                     $store = $path === null || $path === ''
-                        ? $handler . "\0default\0" . $sapi . "\0" . $root
+                        ? $handler . "\0default\0" . $this->defaultSessionStoreFamily($sapi, (string) $root)
                         : $handler . "\0" . $path;
                     $groups[$store][] = [
-                        'label' => $sapi . ':' . $root . ':' . ($context === 'global' && count($contexts) > 1 ? 'global (pools without overrides)' : $context),
+                        // Root and pool names come from the host: keep them printable ASCII and bounded.
+                        'label' => substr((string) preg_replace('/[^\x20-\x7E]/', '?', $sapi . ':' . $root . ':' . ($context === 'global' && count($contexts) > 1 ? 'global (pools without overrides)' : $context)), 0, 120),
                         'is_target' => $sapi === $targetSapi && isset($targetRoots[(string) $root]),
                         'upload_enabled' => in_array(strtolower((string) $effective['session.upload_progress.enabled']), self::INI_TRUE_VALUES, true),
                         'serializer' => strtolower($effective['session.serialize_handler'] ?? 'php'),
@@ -1079,7 +1104,7 @@ final class AdvisoryEvaluator
                 $members,
             ), 0, 8);
             $sharing = $members[0]['default_location']
-                ? 'of one PHP install appear to share its default session location (session.save_path unset; separate pools do not imply separate storage)'
+                ? 'appear to share one default session location (session.save_path unset: pools of one install share its default, and Debian/Ubuntu packages of every SAPI and version share /var/lib/php/sessions; separate pools do not imply separate storage)'
                 : 'configure the same session store';
 
             return 'Inspected web contexts ' . $sharing . ' with different serialization handlers while upload progress is explicitly enabled in at least one of them; the advisory requires identical handlers for every reader and writer of the store: '
