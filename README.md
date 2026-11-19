@@ -74,7 +74,7 @@ The PHAR also provides `evidence` and `profile` commands. Use `php php-runtime-a
 
 ## What it checks today
 
-This version covers Linux process/package inventory for **CLI**, **PHP-FPM**, and **Apache `mod_php`** workers, evaluated against the PHP2Shell advisory pack: `CVE-2026-109618`, `CVE-2026-109619`, and `CVE-2026-115560`. It is not a general security certification — review the evidence and source revisions before making operational decisions.
+This version covers Linux process/package inventory for **CLI**, **PHP-FPM**, and **Apache `mod_php`** workers, evaluated against the PHP2Shell advisory pack (as of 2026-11-19): `CVE-2026-109618`, `CVE-2026-109619`, `CVE-2026-115560`, and `CVE-2026-126714`. Upstream fixed versions are recorded for reference only; a patch is reported as `verified_fixed` only from a sourced vendor rule plus verified worker provenance. Session configuration exposure (upload progress, serializer, session storage) is reported as a separate fact and never folded into patch status. It is not a general security certification — review the evidence and source revisions before making operational decisions.
 
 Every assessment resolves to one of four verdicts:
 

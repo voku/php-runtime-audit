@@ -19,6 +19,7 @@ use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
  * @phpstan-type AdvisorySource array{source_id: string, kind: 'vendor_advisory'|'other', locator: string, captured_at: string, captured_digest: string|null, current_digest: null, freshness: 'unknown'}
  * @phpstan-type AdvisoryFact array{fact_id: string, key: string, value: mixed, source_id: string}
  * @phpstan-type AdvisoryAssessment array{record_type: 'assessment', schema_version: '1.0', record_id: string, subject_id: string, assessed_at: string, verdict: string, patch_status: string, patch_evidence_ids: list<string>, compromise_evidence: array{status: 'unknown', evidence_ids: list<string>}, rationale: string}
+ * @phpstan-type AssessmentBasis array{verdict: string, patch_status: string, reason: string, configuration_exposure: array{state: string, reason: string}|null}
  * @phpstan-type AdvisoryEvaluation array{sources: list<AdvisorySource>, facts: list<AdvisoryFact>, assessments: list<AdvisoryAssessment>}
  */
 final class AdvisoryEvaluator
@@ -130,6 +131,19 @@ final class AdvisoryEvaluator
                     ],
                     $sourceId,
                 );
+                $exposureFact = null;
+                if ($basis['configuration_exposure'] !== null) {
+                    $exposureFact = $this->addFact(
+                        $facts,
+                        'advisory.' . $advisory['cve'] . '.' . $targetId . '.configuration_exposure',
+                        [
+                            'state' => $basis['configuration_exposure']['state'],
+                            'reason' => $basis['configuration_exposure']['reason'],
+                            'independent_of' => ['patch_status', 'compromise_evidence'],
+                        ],
+                        $mainSourceId,
+                    );
+                }
                 $evidenceIds = [];
                 foreach ([
                     $target['source_fact_id'],
@@ -559,10 +573,23 @@ final class AdvisoryEvaluator
      * @phpstan-param RuntimeInventory $inventory
      * @phpstan-param RuntimeTarget $target
      * @phpstan-param VendorRule|null $rule
-     * @phpstan-return array{verdict: string, patch_status: string, reason: string}
+     * @phpstan-return AssessmentBasis
      */
     private function assess(array $advisory, array $inventory, array $target, ?array $rule): array
     {
+        // Patch status, configuration exposure and compromise are independent axes. The patch
+        // axis always comes from the same conservative vendor/provenance path and is never changed
+        // by configuration. Configuration exposure is its own fact (not patch evidence); it can only
+        // turn an unknown or verified_fixed verdict into needs_investigation.
+        $patch = $this->patchAssessment($inventory, $target, $rule);
+
+        if ($advisory['cve'] === 'CVE-2026-126714') {
+            return $patch + ['configuration_exposure' => [
+                'state' => 'unknown',
+                'reason' => 'session.save_handler and session.save_path are not collected, so whether this runtime uses the affected files backend is unverified. Disabling upload progress is only a partial measure: applications can store untrusted data in file-backed sessions independently.',
+            ]];
+        }
+
         if ($advisory['cve'] === 'CVE-2026-115560') {
             $configurationSapi = match ($target['kind']) {
                 'fpm' => 'fpm',
@@ -599,18 +626,59 @@ final class AdvisoryEvaluator
             } elseif (!$knownWebRuntime) {
                 $reason = 'No PHP web runtime was identified; configuration alone cannot establish that the described path is reachable.';
             } elseif (!$settingsObserved) {
-                $reason = 'Relevant configuration is missing or conflicting; .user.ini or Apache per-directory overrides and application code changes are not observed, and no upstream fixed release is listed.';
+                $reason = 'Relevant configuration is missing or conflicting; .user.ini or Apache per-directory overrides and application code changes are not observed.';
             } else {
                 $reason = 'Inspected configuration does not meet the described startup conditions, but .user.ini or Apache per-directory overrides and application code may change effective behavior; applicability remains unknown.';
             }
 
-            return [
-                'verdict' => $riskConfiguration ? 'needs_investigation' : 'unknown',
-                'patch_status' => 'unknown',
+            $exposure = [
+                'state' => $riskConfiguration
+                    ? 'needs_investigation'
+                    : ($knownWebRuntime && $settingsObserved ? 'not_observed' : 'unknown'),
                 'reason' => $reason,
+            ];
+            if ($riskConfiguration && $patch['patch_status'] === 'potentially_affected') {
+                // Keep the upgrade action: remediation is driven by the verdict, so an unpatched
+                // runtime must not be downgraded to a configuration-only finding.
+                return [
+                    'verdict' => 'potentially_affected',
+                    'patch_status' => 'potentially_affected',
+                    'reason' => $patch['reason'] . ' Configuration exposure (assessed separately, also needs investigation): ' . $reason,
+                    'configuration_exposure' => $exposure,
+                ];
+            }
+            if ($riskConfiguration) {
+                return [
+                    'verdict' => 'needs_investigation',
+                    'patch_status' => $patch['patch_status'],
+                    'reason' => $reason
+                        . ($patch['patch_status'] === 'verified_fixed'
+                            ? ' The verified fix does not make an explicitly enabled upload-progress path safe when readers and writers of the same session store use different serialization handlers.'
+                            : '')
+                        . ' Patch evidence (assessed separately): ' . $patch['reason'],
+                    'configuration_exposure' => $exposure,
+                ];
+            }
+
+            return [
+                'verdict' => $patch['verdict'],
+                'patch_status' => $patch['patch_status'],
+                'reason' => $patch['reason'] . ' Configuration exposure (assessed separately): ' . $reason,
+                'configuration_exposure' => $exposure,
             ];
         }
 
+        return $patch + ['configuration_exposure' => null];
+    }
+
+    /**
+     * @phpstan-param RuntimeInventory $inventory
+     * @phpstan-param RuntimeTarget $target
+     * @phpstan-param VendorRule|null $rule
+     * @phpstan-return array{verdict: string, patch_status: string, reason: string}
+     */
+    private function patchAssessment(array $inventory, array $target, ?array $rule): array
+    {
         $version = $target['version'];
         if ($version === null || $target['deleted']) {
             return [
@@ -622,7 +690,6 @@ final class AdvisoryEvaluator
             ];
         }
 
-        $rule = $rule ?? null;
         if ($target['package'] !== null && $target['package_version'] === null) {
             return [
                 'verdict' => 'unknown',
@@ -768,7 +835,7 @@ final class AdvisoryEvaluator
     /**
      * @phpstan-param AdvisoryDefinition $advisory
      * @phpstan-param RuntimeTarget $target
-     * @phpstan-param array{verdict: string, patch_status: string, reason: string} $basis
+     * @phpstan-param AssessmentBasis $basis
      * @phpstan-param VendorRule|null $rule
      */
     private function rationale(array $advisory, string $asOf, array $target, array $basis, ?array $rule): string

@@ -11,6 +11,8 @@ for current delivery gates). Entries below track notable merges to `main`.
 
 ### Added
 
+- November 19 advisory update (#38): `CVE-2026-115560` now carries the upstream fixed releases from GHSA-658j-r8rw-q6mx (8.2.36, 8.3.37, 8.4.28, 8.5.13) and sourced shared-store/serializer mitigations, and `CVE-2026-126714` (GHSA-fm2m-fjf5-v3cp, partially overwritten session files) is added. No vendor backports and no 8.6 threshold are encoded until they are sourced.
+- Per-target `configuration_exposure` facts for `CVE-2026-115560` and `CVE-2026-126714`, kept independent of `patch_status` and compromise evidence (#38).
 - Reverse dpkg lookup (`RuntimePackageProvenance::checkApacheModule()`) that identifies an Apache `mod_php` module's package even when the loaded `.so` filename carries no version, by checking which installed `libapache2-mod-php*` package's own manifest claims the exact loaded path (#11).
 - PRA-5: reviewable, human-approved remediation plans generated from a runtime audit report (`bin/php-runtime-audit-report`), plus a human-readable `REPORT.md` (#10).
 - Real, disposable Docker-based PHP 8.5 FPM and Apache worker coverage in CI, alongside the existing 8.2/8.4 pair (#9).
@@ -21,4 +23,6 @@ for current delivery gates). Entries below track notable merges to `main`.
 
 ### Fixed
 
+- The advisory catalog no longer hardcodes PHP branches 8.2–8.5; any `major.minor` branch is accepted when its fixed version is a final release on the same branch (#38).
+- `CVE-2026-115560` patch status is derived from the same vendor-rule/provenance path as other advisories instead of an unconditional `unknown`. Risky configuration keeps `needs_investigation` even with a verified fix, and an unpatched runtime keeps `potentially_affected` so the upgrade action is not lost (#38).
 - Apache worker package-provenance lookups are now cached per module path, so many worker processes sharing one module file don't redundantly re-hash it against the shared integrity-check budget (#11).
