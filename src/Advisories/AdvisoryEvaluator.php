@@ -140,6 +140,7 @@ final class AdvisoryEvaluator
                             'state' => $basis['configuration_exposure']['state'],
                             'reason' => $basis['configuration_exposure']['reason'],
                             'independent_of' => ['patch_status', 'compromise_evidence'],
+                            'derived_from_fact_ids' => $this->configurationFactIds($inventory, $target),
                         ],
                         $mainSourceId,
                     );
@@ -660,6 +661,19 @@ final class AdvisoryEvaluator
                 ];
             }
 
+            if ($patch['verdict'] === 'verified_fixed' && $exposure['state'] !== 'not_observed') {
+                // A verified fix alone must not become a no-action result: the advisory requires
+                // matching serializers even after the update, and unobserved or conflicting
+                // configuration is not evidence that the risky combination is absent.
+                return [
+                    'verdict' => 'needs_investigation',
+                    'patch_status' => 'verified_fixed',
+                    'reason' => 'The patch is verified, but upload-progress and serialization-handler configuration could not be observed for this runtime. ' . $reason
+                        . ' Patch evidence (assessed separately): ' . $patch['reason'],
+                    'configuration_exposure' => $exposure,
+                ];
+            }
+
             return [
                 'verdict' => $patch['verdict'],
                 'patch_status' => $patch['patch_status'],
@@ -889,6 +903,34 @@ final class AdvisoryEvaluator
         $facts[] = ['fact_id' => $id, 'key' => $key, 'value' => $value, 'source_id' => $sourceId];
 
         return $id;
+    }
+
+    /**
+     * Inventory facts the configuration-exposure judgment for this target was derived from.
+     *
+     * @phpstan-param RuntimeInventory $inventory
+     * @phpstan-param RuntimeTarget $target
+     * @return list<string>
+     */
+    private function configurationFactIds(array $inventory, array $target): array
+    {
+        $sapi = match ($target['kind']) {
+            'fpm' => 'fpm',
+            'apache-mod-php' => 'apache2',
+            default => null,
+        };
+        if ($sapi === null) {
+            return [];
+        }
+        $ids = [];
+        foreach (['session.upload_progress.enabled', 'session.serialize_handler'] as $setting) {
+            $id = $this->factId($inventory['facts'], 'configuration.' . $sapi . '.' . $setting);
+            if ($id !== null) {
+                $ids[] = $id;
+            }
+        }
+
+        return $ids;
     }
 
     /** @phpstan-param list<RuntimeFact> $facts */

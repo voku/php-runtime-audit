@@ -532,18 +532,31 @@ final class AdvisoryEvaluatorTest extends TestCase
         $catalog = $this->catalogWithSyntheticNovemberDebianRules();
         $inventory = $this->collectInventory('synthetic-debian-integrity');
 
-        [, $cleanEvaluation] = $this->evaluateInventory($inventory, $catalog);
+        // Verified fix but unobserved session configuration: never a no-action verdict.
+        $unobservedInventory = $inventory;
+        foreach (['session.upload_progress.enabled', 'session.serialize_handler'] as $setting) {
+            $unobservedInventory['configuration_by_sapi']['fpm'][$setting] = ['value' => null, 'state' => 'unknown', 'files' => [], 'observations' => []];
+        }
+        [, $unobservedEvaluation] = $this->evaluateInventory($unobservedInventory, $catalog);
+        $unobserved = $this->assessmentMap($unobservedEvaluation)['CVE-2026-115560'];
+        $unobservedExposure = $this->factMap($unobservedEvaluation)['advisory.CVE-2026-115560.worker-1.configuration_exposure'];
+        self::assertIsArray($unobservedExposure);
+        self::assertSame('unknown', $unobservedExposure['state']);
+        self::assertSame('needs_investigation', $unobserved['verdict']);
+        self::assertSame('verified_fixed', $unobserved['patch_status']);
+        self::assertSame(['patch_status', 'compromise_evidence'], $unobservedExposure['independent_of']);
+
+        // Verified fix and configuration observed without the risky combination.
+        [, $cleanEvaluation] = $this->evaluateInventory($this->withFpmSessionSettings($inventory, '0', 'php'), $catalog);
         $clean = $this->assessmentMap($cleanEvaluation)['CVE-2026-115560'];
-        $cleanFacts = $this->factMap($cleanEvaluation);
+        $cleanExposure = $this->factMap($cleanEvaluation)['advisory.CVE-2026-115560.worker-1.configuration_exposure'];
         self::assertSame('verified_fixed', $clean['patch_status']);
         self::assertSame('verified_fixed', $clean['verdict']);
         self::assertSame('unknown', $clean['compromise_evidence']['status']);
         self::assertContains('fact.worker.1.package_provenance', $clean['patch_evidence_ids']);
         self::assertStringContainsString('Configuration exposure (assessed separately)', $clean['rationale']);
-        $cleanExposure = $cleanFacts['advisory.CVE-2026-115560.worker-1.configuration_exposure'];
         self::assertIsArray($cleanExposure);
-        self::assertNotSame('needs_investigation', $cleanExposure['state']);
-        self::assertSame(['patch_status', 'compromise_evidence'], $cleanExposure['independent_of']);
+        self::assertSame('not_observed', $cleanExposure['state']);
 
         $risky = $this->withFpmSessionSettings($inventory, '1', 'php_serialize');
         [, $riskyEvaluation] = $this->evaluateInventory($risky, $catalog);
@@ -558,6 +571,8 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertStringContainsString('does not make an explicitly enabled upload-progress path safe', $assessment['rationale']);
         self::assertIsArray($exposure);
         self::assertSame('needs_investigation', $exposure['state']);
+        self::assertIsArray($exposure['derived_from_fact_ids']);
+        self::assertNotSame([], $exposure['derived_from_fact_ids']);
     }
 
     public function test_cve_115560_risky_configuration_on_an_unpatched_runtime_keeps_both_axes(): void
