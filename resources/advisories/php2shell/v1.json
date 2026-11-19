@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "as_of": "2026-10-25",
+  "as_of": "2026-11-19",
   "advisories": [
     {
       "cve": "CVE-2026-109618",
@@ -49,11 +49,25 @@
     {
       "cve": "CVE-2026-115560",
       "title": "PHP session upload progress and serialization handler interaction",
-      "source_url": "https://www.php.net/archive/2026.php#2026-10-23-1",
-      "revision": "2026-10-23",
-      "fixed_upstream": {},
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-658j-r8rw-q6mx",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.2": "8.2.36", "8.3": "8.3.37", "8.4": "8.4.28", "8.5": "8.5.13"},
       "mitigations": [
-        {"setting": "session.upload_progress.enabled", "value": "0", "effect": "blocks-described-vector", "source_url": "https://www.php.net/archive/2026.php#2026-10-23-1"}
+        {"setting": "session.upload_progress.enabled", "value": "0 administratively in every configuration that can write to the session store (ini_set() is too late)", "effect": "blocks-described-vector", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-658j-r8rw-q6mx"},
+        {"setting": "session.serialize_handler", "value": "identical for every reader and writer of a shared session store while upload progress is enabled, even after the update", "effect": "required-for-explicit-enable", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-658j-r8rw-q6mx"},
+        {"setting": "session.save_path", "value": "isolated per application when serializer formats differ; separate FPM pools do not imply separate stores", "effect": "partial", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-658j-r8rw-q6mx"}
+      ],
+      "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-126714",
+      "title": "PHP partially overwritten session files",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-fm2m-fjf5-v3cp",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.2": "8.2.36", "8.3": "8.3.37", "8.4": "8.4.28", "8.5": "8.5.13"},
+      "mitigations": [
+        {"setting": "session.upload_progress.enabled", "value": "0 administratively if the feature is not needed", "effect": "partial", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-fm2m-fjf5-v3cp"},
+        {"setting": "session.save_handler", "value": "a backend that replaces records atomically instead of files; the built-in files handler still needs the PHP update", "effect": "partial", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-fm2m-fjf5-v3cp"}
       ],
       "vendor_rules": []
     }
