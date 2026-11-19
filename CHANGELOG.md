@@ -24,5 +24,5 @@ for current delivery gates). Entries below track notable merges to `main`.
 ### Fixed
 
 - The advisory catalog no longer hardcodes PHP branches 8.2–8.5; any `major.minor` branch is accepted when its fixed version is a final release on the same branch (#38).
-- `CVE-2026-115560` patch status is derived from the same vendor-rule/provenance path as other advisories instead of an unconditional `unknown`. Risky or unobserved configuration keeps `needs_investigation` even with a verified fix, and an unpatched runtime keeps `potentially_affected` so the upgrade action is not lost (#38).
+- `CVE-2026-115560` patch status is derived from the same vendor-rule/provenance path as other advisories instead of an unconditional `unknown`. Even with a verified fix the verdict stays `needs_investigation` (never a no-action `verified_fixed`), because administrative scope, per-directory overrides and other writers of a shared session store are not collected, and an unpatched runtime keeps `potentially_affected` so the upgrade action is not lost (#38).
 - Apache worker package-provenance lookups are now cached per module path, so many worker processes sharing one module file don't redundantly re-hash it against the shared integrity-check budget (#11).

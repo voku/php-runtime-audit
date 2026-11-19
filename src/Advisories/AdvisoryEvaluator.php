@@ -131,16 +131,17 @@ final class AdvisoryEvaluator
                     ],
                     $sourceId,
                 );
-                $exposureFact = null;
                 if ($basis['configuration_exposure'] !== null) {
-                    $exposureFact = $this->addFact(
+                    $this->addFact(
                         $facts,
                         'advisory.' . $advisory['cve'] . '.' . $targetId . '.configuration_exposure',
                         [
                             'state' => $basis['configuration_exposure']['state'],
                             'reason' => $basis['configuration_exposure']['reason'],
                             'independent_of' => ['patch_status', 'compromise_evidence'],
-                            'derived_from_fact_ids' => $this->configurationFactIds($inventory, $target),
+                            'derived_from_fact_ids' => $advisory['cve'] === 'CVE-2026-115560'
+                                ? $this->configurationFactIds($inventory, $target)
+                                : [],
                         ],
                         $mainSourceId,
                     );
@@ -615,6 +616,11 @@ final class AdvisoryEvaluator
                 $settingsObserved = $uploadSetting['state'] === 'observed'
                     && $serializeSetting['state'] === 'observed';
             }
+            // not_observed only means the collected configuration has upload progress disabled; it
+            // is not store-wide proof and never clears a verified fix into a no-action verdict.
+            $uploadProgressDisabled = $settingsObserved
+                && is_string($uploadSetting['value'])
+                && in_array(strtolower(trim($uploadSetting['value'])), ['0', 'off', 'false', 'no', ''], true);
             $riskConfiguration = $knownWebRuntime
                 && $this->hasCooccurringConfigurationObservations(
                     $uploadSetting,
@@ -628,14 +634,16 @@ final class AdvisoryEvaluator
                 $reason = 'No PHP web runtime was identified; configuration alone cannot establish that the described path is reachable.';
             } elseif (!$settingsObserved) {
                 $reason = 'Relevant configuration is missing or conflicting; .user.ini or Apache per-directory overrides and application code changes are not observed.';
+            } elseif (!$uploadProgressDisabled) {
+                $reason = 'Upload progress is enabled for this runtime. Its own serialization handler is not one named in the advisory, but other readers and writers of the same session store (session.save_path, other pools or applications) are not collected, so a cross-store serializer mismatch cannot be excluded.';
             } else {
-                $reason = 'Inspected configuration does not meet the described startup conditions, but .user.ini or Apache per-directory overrides and application code may change effective behavior; applicability remains unknown.';
+                $reason = 'Inspected configuration has upload progress disabled, but administrative scope (php_admin_value), .user.ini or Apache per-directory overrides, other writers of the same session store, and application code are not established; applicability remains unknown.';
             }
 
             $exposure = [
                 'state' => $riskConfiguration
                     ? 'needs_investigation'
-                    : ($knownWebRuntime && $settingsObserved ? 'not_observed' : 'unknown'),
+                    : ($knownWebRuntime && $uploadProgressDisabled ? 'not_observed' : 'unknown'),
                 'reason' => $reason,
             ];
             if ($riskConfiguration && $patch['patch_status'] === 'potentially_affected') {
@@ -661,14 +669,16 @@ final class AdvisoryEvaluator
                 ];
             }
 
-            if ($patch['verdict'] === 'verified_fixed' && $exposure['state'] !== 'not_observed') {
-                // A verified fix alone must not become a no-action result: the advisory requires
-                // matching serializers even after the update, and unobserved or conflicting
-                // configuration is not evidence that the risky combination is absent.
+            if ($patch['verdict'] === 'verified_fixed') {
+                // A verified fix never becomes a no-action result for this advisory: it requires
+                // matching serializers (or upload progress administratively disabled) across every
+                // writer of a shared session store even after the update. The collector cannot
+                // establish php_admin_value scope, .user.ini/.htaccess overrides, or other store
+                // writers, so even locally disabled upload progress is not store-wide proof.
                 return [
                     'verdict' => 'needs_investigation',
                     'patch_status' => 'verified_fixed',
-                    'reason' => 'The patch is verified, but upload-progress and serialization-handler configuration could not be observed for this runtime. ' . $reason
+                    'reason' => 'The patch is verified, but the advisory requires every reader and writer of a shared session store to use the same serialization handler, or upload progress to be administratively disabled for all of them, even after the update; administrative scope, per-directory overrides and other store writers are not collected. Configuration exposure (assessed separately): ' . $reason
                         . ' Patch evidence (assessed separately): ' . $patch['reason'],
                     'configuration_exposure' => $exposure,
                 ];

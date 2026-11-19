@@ -546,15 +546,28 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertSame('verified_fixed', $unobserved['patch_status']);
         self::assertSame(['patch_status', 'compromise_evidence'], $unobservedExposure['independent_of']);
 
-        // Verified fix and configuration observed without the risky combination.
+        // Verified fix, upload progress enabled with a non-advisory serializer: other store writers
+        // are not collected, so this is still not a no-action result.
+        [, $enabledEvaluation] = $this->evaluateInventory($this->withFpmSessionSettings($inventory, 'On', 'php'), $catalog);
+        $enabled = $this->assessmentMap($enabledEvaluation)['CVE-2026-115560'];
+        $enabledExposure = $this->factMap($enabledEvaluation)['advisory.CVE-2026-115560.worker-1.configuration_exposure'];
+        self::assertIsArray($enabledExposure);
+        self::assertSame('unknown', $enabledExposure['state']);
+        self::assertSame('needs_investigation', $enabled['verdict']);
+        self::assertSame('verified_fixed', $enabled['patch_status']);
+        self::assertStringContainsString('cross-store serializer mismatch', $enabled['rationale']);
+
+        // Verified fix and upload progress observed disabled in the collected configuration.
         [, $cleanEvaluation] = $this->evaluateInventory($this->withFpmSessionSettings($inventory, '0', 'php'), $catalog);
         $clean = $this->assessmentMap($cleanEvaluation)['CVE-2026-115560'];
         $cleanExposure = $this->factMap($cleanEvaluation)['advisory.CVE-2026-115560.worker-1.configuration_exposure'];
+        // Locally disabled upload progress is not store-wide proof, so it is still not a no-action
+        // verdict; the patch axis stays verified_fixed with its evidence.
         self::assertSame('verified_fixed', $clean['patch_status']);
-        self::assertSame('verified_fixed', $clean['verdict']);
+        self::assertSame('needs_investigation', $clean['verdict']);
         self::assertSame('unknown', $clean['compromise_evidence']['status']);
         self::assertContains('fact.worker.1.package_provenance', $clean['patch_evidence_ids']);
-        self::assertStringContainsString('Configuration exposure (assessed separately)', $clean['rationale']);
+        self::assertStringContainsString('other store writers are not collected', $clean['rationale']);
         self::assertIsArray($cleanExposure);
         self::assertSame('not_observed', $cleanExposure['state']);
 
@@ -644,6 +657,7 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertSame('unknown', $exposure['state']);
         self::assertIsString($exposure['reason']);
         self::assertStringContainsString('session.save_handler', $exposure['reason']);
+        self::assertSame([], $exposure['derived_from_fact_ids']);
     }
 
     public function test_cve_126714_without_vendor_rule_stays_unknown_despite_upstream_threshold(): void
