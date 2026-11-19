@@ -657,9 +657,10 @@ final class AdvisoryEvaluator
                     $serializeSetting,
                     ['php_binary', 'php_serialize'],
                 );
+            $unresolvedStoreContexts = false;
             $sharedStoreMismatch = $configurationSapi === null || $sameContextRisk
                 ? null
-                : $this->sharedStoreSerializerMismatch($inventory, $configurationSapi, $target);
+                : $this->sharedStoreSerializerMismatch($inventory, $configurationSapi, $target, $unresolvedStoreContexts);
             $riskConfiguration = $sameContextRisk || $sharedStoreMismatch !== null;
             if ($sameContextRisk) {
                 $reason = 'One or more inspected web-SAPI configuration sources contain upload progress enabled and a serialization handler named in the advisory; precedence, per-pool applicability, application code, request path, and runtime handler changes remain unverified.';
@@ -678,7 +679,8 @@ final class AdvisoryEvaluator
             $exposure = [
                 'state' => $riskConfiguration
                     ? 'needs_investigation'
-                    : ($knownWebRuntime && $uploadProgressDisabled ? 'not_observed' : 'unknown'),
+                    // A web context with conflicting session values could share the store unseen.
+                    : ($knownWebRuntime && $uploadProgressDisabled && !$unresolvedStoreContexts ? 'not_observed' : 'unknown'),
                 'reason' => $reason,
                 'derived_from_fact_ids' => $this->configurationFactIds(
                     $inventory,
@@ -995,16 +997,17 @@ final class AdvisoryEvaluator
 
     /**
      * Debian/Ubuntu PHP packages of every version and SAPI (/etc/php/X.Y/{fpm,apache2}) are built
-     * with the same default session.save_path (/var/lib/php/sessions), so they share one default
-     * store. Other installs (source builds, containers, RHEL/Remi) keep a per-install default.
+     * with the same default session.save_path (/var/lib/php/sessions), so the default resolves to
+     * that path and groups with an explicit spelling of it. Other installs (source builds,
+     * containers, RHEL/Remi) keep a per-install default.
      */
-    private function defaultSessionStoreFamily(string $sapi, string $root): string
+    private function defaultSessionStore(string $sapi, string $root): string
     {
         if (preg_match('#\A/etc/php/[0-9]+\.[0-9]+/(?:fpm|apache2)\z#', $root) === 1) {
-            return 'debian-packaged';
+            return '/var/lib/php/sessions';
         }
 
-        return $sapi . "\0" . $root;
+        return "default\0" . $sapi . "\0" . $root;
     }
 
     /**
@@ -1018,8 +1021,9 @@ final class AdvisoryEvaluator
      * @phpstan-param RuntimeInventory $inventory
      * @phpstan-param RuntimeTarget $target
      */
-    private function sharedStoreSerializerMismatch(array $inventory, string $targetSapi, array $target): ?string
+    private function sharedStoreSerializerMismatch(array $inventory, string $targetSapi, array $target, bool &$unresolved = false): ?string
     {
+        $unresolved = false;
         $settings = ['session.upload_progress.enabled', 'session.serialize_handler', 'session.save_handler', 'session.save_path'];
         $targetRoots = [];
         foreach ($settings as $setting) {
@@ -1064,21 +1068,22 @@ final class AdvisoryEvaluator
                     foreach ($settings as $setting) {
                         $observed = array_values(array_unique($contexts[$context][$setting] ?? $global[$setting] ?? []));
                         if (count($observed) > 1) {
-                            continue 2; // conflicting values: this context cannot be judged.
+                            $unresolved = true; // conflicting values: this context cannot be judged.
+                            continue 2;
                         }
                         $effective[$setting] = $observed[0] ?? null;
                     }
                     $handler = strtolower($effective['session.save_handler'] ?? 'files');
                     $path = $effective['session.save_path'];
-                    if ($path !== null && str_starts_with($path, '/')) {
-                        $path = rtrim($path, '/') ?: '/';
+                    if ($path !== null && preg_match('#\A(?:[0-9]{1,3};(?:[0-7]{3,4};)?)?(/.*)\z#', $path, $pathMatch) === 1) {
+                        // The files handler's "N;" / "N;MODE;" prefix does not change the directory.
+                        $path = rtrim($pathMatch[1], '/') ?: '/';
                     }
-                    // An unset save_path resolves to a build-specific default, so it is only treated
-                    // as shared within one install (configuration root and SAPI). Across installs a
-                    // shared store needs an explicitly equal configured value.
-                    $store = $path === null || $path === ''
-                        ? $handler . "\0default\0" . $this->defaultSessionStoreFamily($sapi, (string) $root)
-                        : $handler . "\0" . $path;
+                    // An unset save_path resolves to a build-specific default: shared within one
+                    // install, and across Debian/Ubuntu packages (see defaultSessionStore()).
+                    $store = $handler . "\0" . ($path === null || $path === ''
+                        ? $this->defaultSessionStore($sapi, (string) $root)
+                        : $path);
                     $groups[$store][] = [
                         // Root and pool names come from the host: keep them printable ASCII and bounded.
                         'label' => substr((string) preg_replace('/[^\x20-\x7E]/', '?', $sapi . ':' . $root . ':' . ($context === 'global' && count($contexts) > 1 ? 'global (pools without overrides)' : $context)), 0, 120),

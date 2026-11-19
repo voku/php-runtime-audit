@@ -367,6 +367,48 @@ final class RuntimeWorkerEvidenceTest extends TestCase
         self::fail('Missing configuration advisory assessment.');
     }
 
+    /** @return iterable<string, array{string}> */
+    public static function debianSessionPathSpellings(): iterable
+    {
+        yield 'explicit packaged path' => ['session.save_path=/var/lib/php/sessions'];
+        yield 'explicit path with trailing slash and depth prefix' => ['session.save_path="2;/var/lib/php/sessions/"'];
+    }
+
+    #[DataProvider('debianSessionPathSpellings')]
+    public function test_explicit_debian_session_path_groups_with_the_packaged_default(string $saveLine): void
+    {
+        mkdir($this->root . '/etc/php/8.2/apache2', 0777, true);
+        file_put_contents($this->root . '/etc/php/8.2/apache2/php.ini', "session.upload_progress.enabled=1\nsession.serialize_handler=igbinary\n" . $saveLine . "\n");
+
+        foreach ((new AdvisoryEvaluator())->evaluate($this->collect(), AdvisoryCatalog::load())['assessments'] as $assessment) {
+            if (str_contains($assessment['record_id'], 'CVE-2026-115560')
+                && str_starts_with($assessment['subject_id'], 'worker-')) {
+                self::assertSame('needs_investigation', $assessment['verdict']);
+
+                return;
+            }
+        }
+        self::fail('Missing configuration advisory assessment.');
+    }
+
+    public function test_a_store_member_with_conflicting_values_keeps_the_target_exposure_unknown(): void
+    {
+        mkdir($this->root . '/etc/php/8.2/apache2/conf.d', 0777, true);
+        file_put_contents($this->root . '/etc/php/8.2/apache2/php.ini', "session.upload_progress.enabled=1\nsession.serialize_handler=php\n");
+        file_put_contents($this->root . '/etc/php/8.2/apache2/conf.d/99-x.ini', "session.serialize_handler=igbinary\n");
+        $evaluation = (new AdvisoryEvaluator())->evaluate($this->collect(), AdvisoryCatalog::load());
+
+        foreach ($evaluation['facts'] as $fact) {
+            if (str_starts_with($fact['key'], 'advisory.CVE-2026-115560.worker-') && str_ends_with($fact['key'], '.configuration_exposure')
+                && is_array($fact['value'])) {
+                self::assertSame('unknown', $fact['value']['state']);
+
+                return;
+            }
+        }
+        self::fail('Missing CVE-2026-115560 exposure fact.');
+    }
+
     public function test_non_ascii_pool_names_cannot_break_report_encoding(): void
     {
         mkdir($this->root . '/etc/php/8.2/fpm/pool.d', 0777, true);
