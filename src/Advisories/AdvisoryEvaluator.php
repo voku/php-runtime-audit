@@ -1028,10 +1028,12 @@ final class AdvisoryEvaluator
         foreach ($values as $sapi => $roots) {
             foreach ($roots as $root => $contexts) {
                 $global = $contexts['global'] ?? [];
+                // The global section stays a member even when pools exist: pools without session
+                // directives are not emitted by the collector but inherit exactly these values.
+                // If every pool overrides them this can over-report, which only raises a result.
                 $contextNames = array_keys($contexts);
-                if (count($contextNames) > 1) {
-                    // With pools present, the global section is inherited, not a serving context.
-                    $contextNames = array_values(array_filter($contextNames, static fn($name): bool => $name !== 'global'));
+                if (!in_array('global', $contextNames, true)) {
+                    $contextNames[] = 'global';
                 }
                 foreach ($contextNames as $context) {
                     $effective = [];
@@ -1044,6 +1046,9 @@ final class AdvisoryEvaluator
                     }
                     $handler = strtolower($effective['session.save_handler'] ?? 'files');
                     $path = $effective['session.save_path'];
+                    if ($path !== null && str_starts_with($path, '/')) {
+                        $path = rtrim($path, '/') ?: '/';
+                    }
                     // An unset save_path resolves to a build-specific default, so it is only treated
                     // as shared within one install (configuration root and SAPI). Across installs a
                     // shared store needs an explicitly equal configured value.
@@ -1051,7 +1056,7 @@ final class AdvisoryEvaluator
                         ? $handler . "\0default\0" . $sapi . "\0" . $root
                         : $handler . "\0" . $path;
                     $groups[$store][] = [
-                        'label' => $sapi . ':' . $root . ':' . $context,
+                        'label' => $sapi . ':' . $root . ':' . ($context === 'global' && count($contexts) > 1 ? 'global (pools without overrides)' : $context),
                         'is_target' => $sapi === $targetSapi && isset($targetRoots[(string) $root]),
                         'upload_enabled' => in_array(strtolower((string) $effective['session.upload_progress.enabled']), self::INI_TRUE_VALUES, true),
                         'serializer' => strtolower($effective['session.serialize_handler'] ?? 'php'),

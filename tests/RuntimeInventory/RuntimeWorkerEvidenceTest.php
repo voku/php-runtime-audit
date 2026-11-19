@@ -239,6 +239,7 @@ final class RuntimeWorkerEvidenceTest extends TestCase
     public static function crossInstallStores(): iterable
     {
         yield 'explicitly shared store' => ['/var/lib/php/shared', '/var/lib/php/shared', 'needs_investigation'];
+        yield 'shared store spelled with a trailing slash' => ['/var/lib/php/shared/', '/var/lib/php/shared', 'needs_investigation'];
         yield 'isolated stores' => ['/var/lib/php/app-a', '/var/lib/php/app-b', 'unknown'];
         yield 'both default locations of different installs' => ['', '', 'unknown'];
     }
@@ -316,6 +317,25 @@ final class RuntimeWorkerEvidenceTest extends TestCase
                 // The audited worker's own php.ini disables upload progress; without a shared-store
                 // match that is only "not observed", which never clears a verdict.
                 self::assertSame($expected === 'needs_investigation' ? 'needs_investigation' : 'not_observed', $exposure['state']);
+
+                return;
+            }
+        }
+        self::fail('Missing configuration advisory assessment.');
+    }
+
+    public function test_pools_without_session_overrides_inherit_global_values_in_store_correlation(): void
+    {
+        file_put_contents($this->root . '/etc/php/8.2/fpm/php.ini', "session.upload_progress.enabled=1\nsession.serialize_handler=php\n");
+        mkdir($this->root . '/etc/php/8.2/fpm/pool.d', 0777, true);
+        file_put_contents($this->root . '/etc/php/8.2/fpm/pool.d/custom.conf', "[custom]\nphp_admin_value[session.serialize_handler]=igbinary\n");
+        file_put_contents($this->root . '/etc/php/8.2/fpm/pool.d/www.conf', "[www]\npm=dynamic\n");
+
+        foreach ((new AdvisoryEvaluator())->evaluate($this->collect(), AdvisoryCatalog::load())['assessments'] as $assessment) {
+            if (str_contains($assessment['record_id'], 'CVE-2026-115560')
+                && str_starts_with($assessment['subject_id'], 'worker-')) {
+                self::assertSame('needs_investigation', $assessment['verdict']);
+                self::assertStringContainsString('global (pools without overrides)', $assessment['rationale']);
 
                 return;
             }
