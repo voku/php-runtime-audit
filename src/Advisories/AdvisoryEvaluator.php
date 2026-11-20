@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace voku\PhpRuntimeAudit\Advisories;
 
 use InvalidArgumentException;
+use voku\PhpRuntimeAudit\Evidence\EvidenceValidator;
 use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
 
 /**
@@ -15,7 +16,7 @@ use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
  * @phpstan-import-type VendorRule from AdvisoryCatalog
  * @phpstan-import-type RuntimeFact from RuntimeInventoryCollector
  * @phpstan-import-type RuntimeConfigSetting from RuntimeInventoryCollector
- * @phpstan-type RuntimeTarget array{id: string, subject_id: string, kind: string, version: string|null, package: string|null, package_version: string|null, source_fact_id: string|null, package_fact_id: string|null, deleted: bool|null, provenance_verified: bool, provenance_fact_id: string|null}
+ * @phpstan-type RuntimeTarget array{id: string, subject_id: string, kind: string, version: string|null, package: string|null, package_version: string|null, source_fact_id: string|null, package_fact_id: string|null, deleted: bool|null, provenance_verified: bool, provenance_fact_id: string|null, runtime_path?: string|null}
  * @phpstan-type AdvisorySource array{source_id: string, kind: 'vendor_advisory'|'other', locator: string, captured_at: string, captured_digest: string|null, current_digest: null, freshness: 'unknown'}
  * @phpstan-type AdvisoryFact array{fact_id: string, key: string, value: mixed, source_id: string}
  * @phpstan-type AdvisoryAssessment array{record_type: 'assessment', schema_version: '1.0', record_id: string, subject_id: string, assessed_at: string, verdict: string, patch_status: string, patch_evidence_ids: list<string>, compromise_evidence: array{status: 'unknown', evidence_ids: list<string>}, rationale: string}
@@ -35,8 +36,13 @@ final class AdvisoryEvaluator
     public const MAX_ASSESSMENTS = 256;
     /** The evidence schema's per-observation fact limit, shared by inventory and advisory facts. */
     public const MAX_REPORT_FACTS = 1024;
-    /** Advisories that add a per-target configuration_exposure fact (see assess()). */
-    private const CONFIGURATION_EXPOSURE_CVES = ['CVE-2026-115560', 'CVE-2026-126714'];
+    /** The evidence schema's per-observation source limit, shared by inventory and advisory sources. */
+    public const MAX_REPORT_SOURCES = 256;
+    /**
+     * Bytes held back from the 1 MiB output limit for what the evaluator does not produce itself:
+     * the report summary, the record envelopes and the assessment-budget coverage entry.
+     */
+    private const REPORT_ENVELOPE_RESERVE_BYTES = 16_384;
 
     /**
      * @phpstan-param RuntimeInventory $inventory
@@ -44,15 +50,32 @@ final class AdvisoryEvaluator
      */
     public function evaluate(array $inventory, AdvisoryCatalog $catalog): array
     {
-        $observedAt = $inventory['observed_at'];
         $targets = $this->runtimeTargets($inventory);
         /** @var list<RuntimeTarget> $targets */
         $targets = $targets;
         if ($targets === []) {
             $targets[] = ['id' => 'web-runtime-unknown', 'subject_id' => 'local-host', 'kind' => 'unknown', 'version' => null, 'package' => null, 'package_version' => null, 'source_fact_id' => null, 'package_fact_id' => null, 'deleted' => false, 'provenance_verified' => false, 'provenance_fact_id' => null];
         }
-        [$targets, $omittedSubjectIds] = $this->budgetTargets($targets, $this->targetBudget($catalog, count($inventory['facts'])));
+        [$targets, $omittedSubjectIds] = $this->admitTargets($inventory, $catalog, $targets);
+        $evaluation = $this->evaluateTargets($inventory, $catalog, $targets);
+        if ($omittedSubjectIds !== []) {
+            $evaluation['omitted_subject_ids'] = $omittedSubjectIds;
+        }
 
+        return $evaluation;
+    }
+
+    /**
+     * Catalog facts and sources for every advisory, plus one assessment (with its facts and any
+     * vendor-rule source) per advisory and given target.
+     *
+     * @phpstan-param RuntimeInventory $inventory
+     * @phpstan-param list<RuntimeTarget> $targets
+     * @phpstan-return array{sources: list<AdvisorySource>, facts: list<AdvisoryFact>, assessments: list<AdvisoryAssessment>}
+     */
+    private function evaluateTargets(array $inventory, AdvisoryCatalog $catalog, array $targets): array
+    {
+        $observedAt = $inventory['observed_at'];
         /** @var list<AdvisorySource> $sources */
         $sources = [[
             'source_id' => 'source.advisory-catalog',
@@ -193,49 +216,88 @@ final class AdvisoryEvaluator
             }
         }
 
-        $evaluation = ['sources' => $sources, 'facts' => $facts, 'assessments' => $assessments];
-        if ($omittedSubjectIds !== []) {
-            $evaluation['omitted_subject_ids'] = $omittedSubjectIds;
-        }
-
-        return $evaluation;
+        return ['sources' => $sources, 'facts' => $facts, 'assessments' => $assessments];
     }
 
     /**
-     * How many runtime targets fit: at most MAX_ASSESSMENTS assessments, and at most the facts that
-     * remain under the schema limit after the inventory's own facts and the per-advisory facts.
-     */
-    private function targetBudget(AdvisoryCatalog $catalog, int $inventoryFactCount): int
-    {
-        $advisoryCount = count($catalog->advisories);
-        $perAdvisoryFacts = 1; // advisory.catalog
-        $perTargetFacts = 0;
-        foreach ($catalog->advisories as $advisory) {
-            $perAdvisoryFacts += 2 + count($advisory['mitigations']); // as_of, fixed_upstream, mitigations
-            $perTargetFacts += 2 + (in_array($advisory['cve'], self::CONFIGURATION_EXPOSURE_CVES, true) ? 1 : 0);
-        }
-        $assessmentBudget = intdiv(self::MAX_ASSESSMENTS, max(1, $advisoryCount));
-        $factBudget = intdiv(max(0, self::MAX_REPORT_FACTS - $inventoryFactCount - $perAdvisoryFacts), max(1, $perTargetFacts));
-
-        return max(1, min($assessmentBudget, $factBudget));
-    }
-
-    /**
-     * Keep the report inside its budget instead of failing it: assess the most relevant targets
-     * first (running web workers, then CLI runtimes, then installed packages) and return the rest
-     * as omitted, so the report can state what was not assessed rather than imply it was.
+     * Keep the report inside the evidence limits instead of failing it. Targets are admitted in
+     * relevance order (running web workers, then CLI runtimes, then installed packages, then
+     * further identical workers of an already admitted runtime) while the measured output of the
+     * catalog plus every admitted target stays within the assessment, fact, source and byte
+     * limits. The first target that does not fit and every later one are returned as omitted, so
+     * the report can state what was not assessed rather than imply it was. When the catalog leaves
+     * no room for one target, every target is omitted. Inventory and catalog-level facts and
+     * sources are always emitted; if they alone exceed the limits, the report builder's schema
+     * guard still rejects the report.
      *
+     * @phpstan-param RuntimeInventory $inventory
      * @phpstan-param list<RuntimeTarget> $targets
      * @phpstan-return array{list<RuntimeTarget>, list<string>}
      */
-    private function budgetTargets(array $targets, int $budget): array
+    private function admitTargets(array $inventory, AdvisoryCatalog $catalog, array $targets): array
     {
-        if (count($targets) <= $budget) {
-            return [$targets, []];
+        $catalogOnly = $this->evaluateTargets($inventory, $catalog, []);
+        $catalogFactCount = count($catalogOnly['facts']);
+        $catalogFactIds = array_fill_keys(array_column($catalogOnly['facts'], 'fact_id'), true);
+        $catalogSourceIds = array_fill_keys(array_column($catalogOnly['sources'], 'source_id'), true);
+        $sourceIds = array_fill_keys(array_column($inventory['sources'], 'source_id'), true) + $catalogSourceIds;
+        $factCount = count($inventory['facts']) + $catalogFactCount;
+        $assessmentCount = 0;
+        $bytes = self::REPORT_ENVELOPE_RESERVE_BYTES
+            + $this->encodedLength($inventory['sources']) + $this->encodedLength($inventory['facts'])
+            + $this->encodedLength($inventory['coverage'])
+            + $this->encodedLength($catalogOnly['sources']) + $this->encodedLength($catalogOnly['facts']);
+
+        $kept = [];
+        $omitted = [];
+        foreach ($this->rankTargets($targets) as [$position, $target]) {
+            if ($omitted !== []) {
+                $omitted[] = $target['subject_id'];
+                continue;
+            }
+            $single = $this->evaluateTargets($inventory, $catalog, [$target]);
+            $newSources = array_values(array_filter(
+                $single['sources'],
+                static fn(array $source): bool => !isset($sourceIds[$source['source_id']]),
+            ));
+            $targetFacts = array_values(array_filter(
+                $single['facts'],
+                static fn(array $fact): bool => !isset($catalogFactIds[$fact['fact_id']]),
+            ));
+            // Each list element also costs one separating comma in the encoded report.
+            $targetBytes = $this->encodedLength($newSources) + $this->encodedLength($targetFacts)
+                + $this->encodedLength($single['assessments'])
+                + count($newSources) + count($targetFacts) + count($single['assessments']);
+            if ($assessmentCount + count($single['assessments']) > self::MAX_ASSESSMENTS
+                || $factCount + count($targetFacts) > self::MAX_REPORT_FACTS
+                || count($sourceIds) + count($newSources) > self::MAX_REPORT_SOURCES
+                || $bytes + $targetBytes > EvidenceValidator::MAX_INPUT_BYTES) {
+                $omitted[] = $target['subject_id'];
+                continue;
+            }
+            $assessmentCount += count($single['assessments']);
+            $factCount += count($targetFacts);
+            $bytes += $targetBytes;
+            foreach ($newSources as $source) {
+                $sourceIds[$source['source_id']] = true;
+            }
+            $kept[$position] = $target;
         }
-        // Distinct runtimes first: the first worker per runtime identity ranks with web workers;
-        // further identical pool children rank after packages so they cannot push out a CLI of
-        // another PHP version or a package.
+        ksort($kept);
+
+        return [array_values($kept), $omitted];
+    }
+
+    /**
+     * Relevance order for the report limits. Distinct runtimes first: the first worker per
+     * runtime identity ranks with web workers; further identical pool children rank after
+     * packages so they cannot push out a CLI of another PHP version or a package.
+     *
+     * @phpstan-param list<RuntimeTarget> $targets
+     * @phpstan-return list<array{int, RuntimeTarget}>
+     */
+    private function rankTargets(array $targets): array
+    {
         $seenRuntimes = [];
         $ordered = [];
         foreach ($targets as $position => $target) {
@@ -244,17 +306,8 @@ final class AdvisoryEvaluator
                 'cli' => 1,
                 default => 2,
             };
-            // Only demonstrably identical workers are deprioritised: same packaged runtime, same
-            // version, same provenance result and not running a deleted binary or module. A deleted
-            // or unpackaged worker (whose binary identity is not established) always keeps rank 0.
-            if ($rank === 0 && $target['deleted'] !== true && $target['package'] !== null && $target['package_version'] !== null) {
-                $identity = implode("\0", [
-                    $target['kind'],
-                    $target['package'],
-                    $target['package_version'],
-                    $target['version'] ?? '',
-                    $target['provenance_verified'] ? 'verified' : 'unverified',
-                ]);
+            $identity = $rank === 0 ? $this->workerRuntimeIdentity($target) : null;
+            if ($identity !== null) {
                 if (isset($seenRuntimes[$identity])) {
                     $rank = 3;
                 }
@@ -263,14 +316,42 @@ final class AdvisoryEvaluator
             $ordered[] = [$rank, $position, $target];
         }
         usort($ordered, static fn(array $left, array $right): int => [$left[0], $left[1]] <=> [$right[0], $right[1]]);
-        $kept = array_slice($ordered, 0, $budget);
-        // Preserve the original target order among the kept ones.
-        usort($kept, static fn(array $left, array $right): int => $left[1] <=> $right[1]);
 
-        return [
-            array_map(static fn(array $entry): array => $entry[2], $kept),
-            array_map(static fn(array $entry): string => $entry[2]['subject_id'], array_slice($ordered, $budget)),
-        ];
+        return array_map(static fn(array $entry): array => [$entry[1], $entry[2]], $ordered);
+    }
+
+    /**
+     * Only demonstrably identical workers share an identity: not running a deleted binary or
+     * module, the same provenance result, and either the same packaged runtime and version or,
+     * for unpackaged builds (official container images), the same executable or module path and
+     * version. A worker whose binary identity is not established gets none and always keeps its
+     * rank.
+     *
+     * @phpstan-param RuntimeTarget $target
+     */
+    private function workerRuntimeIdentity(array $target): ?string
+    {
+        if ($target['deleted'] !== false) {
+            return null;
+        }
+        $provenance = $target['provenance_verified'] ? 'verified' : 'unverified';
+        if ($target['package'] !== null && $target['package_version'] !== null) {
+            return implode("\0", ['package', $target['kind'], $target['package'], $target['package_version'], $target['version'] ?? '', $provenance]);
+        }
+        $path = $target['runtime_path'] ?? null;
+        if ($target['package'] === null && is_string($path) && $path !== '' && $target['kind'] === 'fpm' && $target['version'] !== null) {
+            return implode("\0", ['path', $target['kind'], $path, $target['version'], $provenance]);
+        }
+        if ($target['package'] === null && is_string($path) && $path !== '' && $target['kind'] === 'apache-mod-php') {
+            return implode("\0", ['path', $target['kind'], $path, $provenance]);
+        }
+
+        return null;
+    }
+
+    private function encodedLength(mixed $value): int
+    {
+        return strlen(json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
     }
 
     /**
@@ -306,6 +387,7 @@ final class AdvisoryEvaluator
                     'source_fact_id' => $this->factId($facts, 'worker.' . $workerIndex . '.version'),
                     'package_fact_id' => $package['fact_id'] ?? null,
                     'deleted' => $worker['executable_deleted'],
+                    'runtime_path' => is_string($executablePath) ? $executablePath : null,
                 ];
                 continue;
             }
@@ -342,6 +424,8 @@ final class AdvisoryEvaluator
                     'source_fact_id' => $this->factId($facts, 'worker.' . $workerIndex . '.apache_php_modules'),
                     'package_fact_id' => $package['fact_id'] ?? null,
                     'deleted' => $worker['apache_php_module_deleted'] === true,
+                    // A module whose deletion state is unknown has no established identity.
+                    'runtime_path' => $worker['apache_php_module_deleted'] === false ? $modulePath : null,
                 ];
             }
         }

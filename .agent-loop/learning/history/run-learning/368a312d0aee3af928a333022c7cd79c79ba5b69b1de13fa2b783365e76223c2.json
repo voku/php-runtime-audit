@@ -1,0 +1,15 @@
+{
+    "schema_version": "1.0",
+    "kind": "run_learning_decision",
+    "run_id": "run:PRA-15:552e4e2cbef90571",
+    "decision": "follow_up_required",
+    "decided_by": "claude",
+    "decided_at": "2026-11-20T11:07:58+00:00",
+    "reason": "Owner accepted: collector inventory is unbounded, so catalog caps cannot guarantee room (report fails above 966 inventory facts or 236 sources with the bundled catalog); 2048-byte URL criterion replaced by a 256-byte load cap; greedy prefix admission. Follow-ups: 96-URL headroom for per-CVE vendor URLs, same-path unpackaged workers across containers ranked identical, duplicate package lines and over-long CVE ids still throw.",
+    "finding_ids": [],
+    "follow_up_ref": "issue#38",
+    "contract_revision": 1,
+    "implementation_snapshot": "sha256:8e397d572f58b05d7adffb5a149afffc85abbda5b19109608ac70d91703eb759",
+    "validation_evidence_sha256": "sha256:9d55148c12adfb5d217d540ba6f7a6a76d51ecdc6a04f34b90444fb619326e71",
+    "review_evidence_sha256": "sha256:e7f360a4effabef6f2010cc81ff4e5b5dd27f8c1610899ef20d709a7c540eb65"
+}

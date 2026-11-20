@@ -142,6 +142,111 @@ final class AdvisoryCatalogTest extends TestCase
         $this->loadWithFixedUpstream($fixedUpstream);
     }
 
+    public function test_bundled_catalog_stays_within_its_report_limits(): void
+    {
+        $catalog = AdvisoryCatalog::load();
+        $urls = [];
+        $facts = 1;
+        foreach ($catalog->advisories as $advisory) {
+            $urls[$advisory['source_url']] = true;
+            foreach ([...$advisory['mitigations'], ...$advisory['vendor_rules']] as $entry) {
+                $urls[$entry['source_url']] = true;
+            }
+            $facts += 2 + count($advisory['mitigations']);
+        }
+
+        self::assertLessThanOrEqual(AdvisoryCatalog::MAX_DISTINCT_SOURCE_URLS, count($urls));
+        self::assertLessThanOrEqual(AdvisoryCatalog::MAX_CATALOG_FACTS, $facts);
+    }
+
+    public function test_distinct_source_urls_are_capped_including_mitigation_and_vendor_rule_sources(): void
+    {
+        // 32 advisories x (main + mitigation + vendor rule) = 96 distinct URLs: accepted.
+        self::assertCount(32, $this->loadWithDistinctSources(32)->advisories);
+
+        // One more advisory adds three more distinct URLs: rejected at load time.
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('distinct source URLs');
+        $this->loadWithDistinctSources(33);
+    }
+
+    public function test_catalog_level_facts_are_capped(): void
+    {
+        // 1 catalog fact + 51 advisories x (2 + 3 mitigations) = 256 facts: accepted.
+        self::assertCount(51, $this->loadWithMitigationCount(51, 3)->advisories);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('catalog facts');
+        $this->loadWithMitigationCount(52, 3);
+    }
+
+    public function test_source_urls_longer_than_a_report_locator_are_rejected(): void
+    {
+        $url = 'https://example.invalid/' . str_repeat('a', 232);
+        self::assertSame(256, strlen($url));
+        self::assertSame($url, $this->loadAdvisories([$this->advisory(0, $url)])->advisories[0]['source_url']);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->loadAdvisories([$this->advisory(0, $url . 'a')]);
+    }
+
+    private function loadWithDistinctSources(int $count): AdvisoryCatalog
+    {
+        $advisories = [];
+        for ($index = 0; $index < $count; ++$index) {
+            $advisory = $this->advisory($index, 'https://example.invalid/advisory/' . $index);
+            $advisory['mitigations'] = [['setting' => 'x', 'value' => 'y', 'effect' => 'partial', 'source_url' => 'https://example.invalid/mitigation/' . $index]];
+            $advisory['vendor_rules'] = [[
+                'vendor' => 'debian', 'release' => 'bookworm', 'package_names' => ['php8.2-fpm'],
+                'fixed_version' => '8.2.36-1', 'source_url' => 'https://example.invalid/rule/' . $index, 'revision' => '2026-11-19',
+            ]];
+            $advisories[] = $advisory;
+        }
+
+        return $this->loadAdvisories($advisories);
+    }
+
+    private function loadWithMitigationCount(int $count, int $mitigations): AdvisoryCatalog
+    {
+        $advisories = [];
+        for ($index = 0; $index < $count; ++$index) {
+            $advisory = $this->advisory($index, 'https://example.invalid/advisory');
+            $advisory['mitigations'] = array_map(
+                static fn(int $mitigation): array => ['setting' => 'x' . $mitigation, 'value' => 'y', 'effect' => 'partial', 'source_url' => 'https://example.invalid/advisory'],
+                range(1, $mitigations),
+            );
+            $advisories[] = $advisory;
+        }
+
+        return $this->loadAdvisories($advisories);
+    }
+
+    /** @return array<string, mixed> */
+    private function advisory(int $index, string $sourceUrl): array
+    {
+        return [
+            'cve' => sprintf('CVE-2026-9%05d', $index),
+            'title' => 'Synthetic advisory',
+            'source_url' => $sourceUrl,
+            'revision' => '2026-11-19',
+            'fixed_upstream' => ['8.4' => '8.4.28'],
+            'mitigations' => [],
+            'vendor_rules' => [],
+        ];
+    }
+
+    /** @param list<array<string, mixed>> $advisories */
+    private function loadAdvisories(array $advisories): AdvisoryCatalog
+    {
+        $path = sys_get_temp_dir() . '/pra-catalog-test-' . bin2hex(random_bytes(8)) . '.json';
+        file_put_contents($path, json_encode(['schema_version' => '1.0', 'as_of' => '2026-11-19', 'advisories' => $advisories], JSON_THROW_ON_ERROR));
+        try {
+            return AdvisoryCatalog::load($path);
+        } finally {
+            unlink($path);
+        }
+    }
+
     /** @return array<string, AdvisoryDefinition> */
     private function byCve(AdvisoryCatalog $catalog): array
     {

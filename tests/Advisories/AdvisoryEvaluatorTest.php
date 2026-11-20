@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use voku\PhpRuntimeAudit\Advisories\AdvisoryCatalog;
 use voku\PhpRuntimeAudit\Advisories\AdvisoryEvaluator;
 use voku\PhpRuntimeAudit\Advisories\RuntimeAuditReportBuilder;
+use voku\PhpRuntimeAudit\Evidence\EvidenceValidator;
 use voku\PhpRuntimeAudit\RuntimeInventory\FixtureProcessRunner;
 use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
 
@@ -810,6 +811,254 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertNotSame([], $evaluation['omitted_subject_ids'] ?? []);
         self::assertContains('apache-799-1-1', $assessed);
         self::assertNotContains('apache-799-1-1', $evaluation['omitted_subject_ids'] ?? []);
+    }
+
+    public function test_an_inventory_that_leaves_no_fact_room_reports_every_subject_as_omitted(): void
+    {
+        $catalog = AdvisoryCatalog::load();
+        $catalogFacts = 1;
+        foreach ($catalog->advisories as $advisory) {
+            $catalogFacts += 2 + count($advisory['mitigations']);
+        }
+        $inventory = $this->collectInventory('debian-fpm');
+        [, $unbudgeted] = $this->evaluateInventory($inventory, $catalog);
+        $subjects = array_values(array_unique(array_column($unbudgeted['assessments'], 'subject_id')));
+        // One fact short of the limit: no target fits (each needs at least two facts per advisory).
+        $inventory = $this->withPaddingFacts($inventory, AdvisoryEvaluator::MAX_REPORT_FACTS - $catalogFacts - 1);
+
+        [, $evaluation] = $this->evaluateInventory($inventory, $catalog);
+        $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+
+        self::assertSame([], $evaluation['assessments']);
+        self::assertSame(0, $report['summary']['assessment_count']);
+        self::assertSame($subjects, $evaluation['omitted_subject_ids'] ?? []);
+        self::assertSame(count($subjects), $report['summary']['omitted_subject_count']);
+        self::assertSame(AdvisoryEvaluator::MAX_REPORT_FACTS - 1, $this->observationFactCount($report));
+        self::assertSame('blocked', $this->budgetEntry($report)['status'] ?? null);
+    }
+
+    public function test_long_source_urls_cannot_push_the_report_over_its_byte_limit(): void
+    {
+        // 64 advisories x 4 targets pass the assessment and fact limits, but maximal titles,
+        // source URLs and mitigation text in every assessment would push the report past 1 MiB.
+        $catalog = $this->catalogFromTemplate(64, static function (int $index): array {
+            $url = 'https://example.invalid/' . str_repeat('a', 226) . sprintf('/%05d', $index);
+            self::assertSame(256, strlen($url));
+
+            return [
+                'title' => str_repeat('T', 256),
+                'source_url' => $url,
+                'mitigations' => [['setting' => str_repeat('s', 512), 'value' => str_repeat('v', 1024), 'effect' => 'partial', 'source_url' => $url]],
+                'vendor_rules' => [],
+            ];
+        });
+        $inventory = $this->collectInventory('debian-fpm');
+
+        [, $evaluation] = $this->evaluateInventory($inventory, $catalog);
+        $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+
+        $json = json_encode($report, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        self::assertLessThanOrEqual(EvidenceValidator::MAX_INPUT_BYTES, strlen($json));
+        self::assertNotSame([], $evaluation['omitted_subject_ids'] ?? []);
+        self::assertGreaterThan(0, $report['summary']['assessment_count']);
+        // The running web worker is admitted first.
+        self::assertNotSame([], array_filter(
+            array_column($evaluation['assessments'], 'subject_id'),
+            static fn(string $id): bool => str_starts_with($id, 'worker-'),
+        ));
+    }
+
+    public function test_vendor_rule_sources_that_would_exceed_the_source_limit_omit_targets_instead_of_failing(): void
+    {
+        $catalog = $this->catalogWithSyntheticNovemberDebianRules();
+        $inventory = $this->collectInventory('debian-fpm');
+        [, $catalogOnly] = $this->evaluateInventory($this->withPaddingSources($inventory, 0), $catalog);
+        $vendorSource = 'https://example.invalid/synthetic-test-rule';
+        self::assertContains($vendorSource, array_column($catalogOnly['sources'], 'locator'));
+        $catalogSources = count($catalogOnly['sources']) - 1;
+        $room = AdvisoryEvaluator::MAX_REPORT_SOURCES - count($inventory['sources']) - $catalogSources;
+
+        // Exactly full without the vendor-rule source: the matching FPM worker cannot be admitted.
+        $full = $this->withPaddingSources($inventory, $room);
+        [, $evaluation] = $this->evaluateInventory($full, $catalog);
+        $report = (new RuntimeAuditReportBuilder())->build($full, $evaluation);
+        self::assertNotContains($vendorSource, array_column($evaluation['sources'], 'locator'));
+        self::assertContains($catalogOnly['assessments'][0]['subject_id'], $evaluation['omitted_subject_ids'] ?? []);
+        self::assertSame('blocked', $this->budgetEntry($report)['status'] ?? null);
+
+        // One source of room more and the worker is assessed with its vendor-rule source.
+        $fits = $this->withPaddingSources($inventory, $room - 1);
+        [, $evaluation] = $this->evaluateInventory($fits, $catalog);
+        (new RuntimeAuditReportBuilder())->build($fits, $evaluation);
+        self::assertContains($vendorSource, array_column($evaluation['sources'], 'locator'));
+        self::assertContains($catalogOnly['assessments'][0]['subject_id'], array_column($evaluation['assessments'], 'subject_id'));
+    }
+
+    public function test_a_catalog_at_the_source_url_cap_builds_a_report_within_the_source_limit(): void
+    {
+        // 32 advisories x (main + mitigation + matching vendor rule) = 96 distinct URLs, the cap.
+        $catalog = $this->catalogFromTemplate(32, static fn(int $index): array => [
+            'source_url' => 'https://example.invalid/advisory/' . $index,
+            'mitigations' => [['setting' => 'x', 'value' => 'y', 'effect' => 'partial', 'source_url' => 'https://example.invalid/mitigation/' . $index]],
+            'vendor_rules' => [[
+                'vendor' => 'debian', 'release' => 'bookworm', 'package_names' => ['php8.2-fpm'],
+                'fixed_version' => '8.2.35-1~deb12u1', 'source_url' => 'https://example.invalid/rule/' . $index, 'revision' => '2026-11-19',
+            ]],
+        ]);
+        $inventory = $this->collectInventory('debian-fpm');
+
+        [, $evaluation] = $this->evaluateInventory($inventory, $catalog);
+        $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+
+        $locators = array_column($evaluation['sources'], 'locator');
+        self::assertContains('https://example.invalid/rule/0', $locators);
+        $observationSources = 0;
+        foreach ($report['records'] as $record) {
+            if (($record['record_type'] ?? null) === 'observation' && is_array($record['sources'] ?? null)) {
+                $observationSources += count($record['sources']);
+            }
+        }
+        self::assertLessThanOrEqual(AdvisoryEvaluator::MAX_REPORT_SOURCES, $observationSources);
+        self::assertGreaterThan(0, $report['summary']['assessment_count']);
+    }
+
+    public function test_identical_unpackaged_container_workers_do_not_push_out_the_cli(): void
+    {
+        $inventory = $this->collectInventory('container-fpm');
+        $master = $inventory['workers'][0];
+        self::assertSame('fpm', $master['kind']);
+        self::assertIsString($master['executable_path']);
+        for ($child = 1; $child <= 15; ++$child) {
+            $copy = $master;
+            $copy['id'] = 'worker-' . (500 + $child) . '-1';
+            $copy['pid'] = 500 + $child;
+            $inventory['workers'][] = $copy;
+        }
+        // Another FPM binary on the same host is a distinct runtime, not an identical child.
+        $other = $master;
+        $other['id'] = 'worker-600-1';
+        $other['pid'] = 600;
+        $other['executable_path'] = '/opt/other/sbin/php-fpm';
+        $inventory['workers'][] = $other;
+
+        [, $evaluation] = $this->evaluateInventory($inventory);
+        $assessed = array_values(array_unique(array_column($evaluation['assessments'], 'subject_id')));
+        $omitted = $evaluation['omitted_subject_ids'] ?? [];
+
+        self::assertContains($master['id'], $assessed);
+        self::assertContains('worker-600-1', $assessed);
+        self::assertNotSame([], array_filter($assessed, static fn(string $id): bool => str_starts_with($id, 'cli-')));
+        self::assertNotSame([], $omitted);
+        foreach ($omitted as $subjectId) {
+            self::assertMatchesRegularExpression('/\Aworker-5[0-9]{2}-1\z/', $subjectId);
+        }
+    }
+
+    public function test_unpackaged_workers_on_a_deleted_binary_keep_their_rank(): void
+    {
+        $inventory = $this->collectInventory('container-fpm');
+        $master = $inventory['workers'][0];
+        for ($child = 1; $child <= 15; ++$child) {
+            $copy = $master;
+            $copy['id'] = 'worker-' . (500 + $child) . '-1';
+            $copy['pid'] = 500 + $child;
+            $inventory['workers'][] = $copy;
+        }
+        $stale = $master;
+        $stale['id'] = 'worker-599-1';
+        $stale['pid'] = 599;
+        $stale['executable_deleted'] = true;
+        $inventory['workers'][] = $stale;
+
+        [, $evaluation] = $this->evaluateInventory($inventory);
+
+        self::assertContains('worker-599-1', array_column($evaluation['assessments'], 'subject_id'));
+        self::assertNotContains('worker-599-1', $evaluation['omitted_subject_ids'] ?? []);
+    }
+
+    /**
+     * @phpstan-param RuntimeInventory $inventory
+     * @phpstan-return RuntimeInventory
+     */
+    private function withPaddingFacts(array $inventory, int $total): array
+    {
+        $sourceId = $inventory['facts'][0]['source_id'];
+        for ($index = count($inventory['facts']); $index < $total; ++$index) {
+            $inventory['facts'][] = ['fact_id' => 'fact.padding.' . $index, 'key' => 'padding.' . $index, 'value' => $index, 'source_id' => $sourceId];
+        }
+        self::assertCount($total, $inventory['facts']);
+
+        return $inventory;
+    }
+
+    /**
+     * @phpstan-param RuntimeInventory $inventory
+     * @phpstan-return RuntimeInventory
+     */
+    private function withPaddingSources(array $inventory, int $count): array
+    {
+        $template = $inventory['sources'][0];
+        for ($index = 0; $index < $count; ++$index) {
+            $source = $template;
+            $source['source_id'] = 'source.padding-' . $index;
+            $source['locator'] = 'padding:' . $index;
+            $inventory['sources'][] = $source;
+        }
+
+        return $inventory;
+    }
+
+    /** @param array<string, mixed> $report */
+    private function observationFactCount(array $report): int
+    {
+        $count = 0;
+        foreach (is_array($report['records'] ?? null) ? $report['records'] : [] as $record) {
+            if (is_array($record) && ($record['record_type'] ?? null) === 'observation' && is_array($record['facts'] ?? null)) {
+                $count += count($record['facts']);
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * @param array<string, mixed> $report
+     * @return array<mixed>|null
+     */
+    private function budgetEntry(array $report): ?array
+    {
+        foreach (is_array($report['records'] ?? null) ? $report['records'] : [] as $record) {
+            foreach (is_array($record) && is_array($record['entries'] ?? null) ? $record['entries'] : [] as $entry) {
+                if (is_array($entry) && ($entry['check_id'] ?? null) === 'advisory.assessment-budget') {
+                    return $entry;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /** @param callable(int): array<string, mixed> $overrides */
+    private function catalogFromTemplate(int $count, callable $overrides): AdvisoryCatalog
+    {
+        $json = file_get_contents(AdvisoryCatalog::defaultPath());
+        self::assertIsString($json);
+        $data = json_decode($json, true, 32, JSON_THROW_ON_ERROR);
+        self::assertIsArray($data);
+        self::assertIsArray($data['advisories']);
+        $template = $data['advisories'][0];
+        self::assertIsArray($template);
+        $data['advisories'] = [];
+        for ($index = 0; $index < $count; ++$index) {
+            $data['advisories'][] = array_merge($template, ['cve' => sprintf('CVE-2026-9%05d', $index)], $overrides($index));
+        }
+        $path = sys_get_temp_dir() . '/pra-budget-catalog-' . bin2hex(random_bytes(8)) . '.json';
+        file_put_contents($path, json_encode($data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+        try {
+            return AdvisoryCatalog::load($path);
+        } finally {
+            unlink($path);
+        }
     }
 
     public static function syntheticCatalogWithAdvisoryCount(int $count): AdvisoryCatalog

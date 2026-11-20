@@ -35,7 +35,7 @@ final readonly class RuntimeAuditReportBuilder
         }
         $facts = array_merge($inventory['facts'], $evaluation['facts']);
         $assessments = $evaluation['assessments'];
-        if (count($sourcesById) > 256 || count($facts) > AdvisoryEvaluator::MAX_REPORT_FACTS || count($assessments) > AdvisoryEvaluator::MAX_ASSESSMENTS) {
+        if (count($sourcesById) > AdvisoryEvaluator::MAX_REPORT_SOURCES || count($facts) > AdvisoryEvaluator::MAX_REPORT_FACTS || count($assessments) > AdvisoryEvaluator::MAX_ASSESSMENTS) {
             throw new RuntimeException('Generated local evidence exceeds schema collection limits.');
         }
 
@@ -70,9 +70,10 @@ final readonly class RuntimeAuditReportBuilder
             // Never imply full coverage: subjects beyond the assessment budget are reported as not assessed.
             $listed = implode(', ', array_slice($omitted, 0, 12)) . (count($omitted) > 12 ? ', ...' : '');
             $gap = sprintf(
-                'The report budget (%d assessments, one per advisory and runtime subject, within the %d-fact evidence limit) was reached, so %d runtime subject(s) were not assessed. Running web workers were assessed first, then CLI runtimes, then packages, then further identical workers of an already assessed runtime. Not assessed: %s.',
+                'The report budget (%d assessments, one per advisory and runtime subject, within the %d-fact, %d-source and 1 MiB evidence limits) was reached, so %d runtime subject(s) were not assessed. Running web workers were assessed first, then CLI runtimes, then packages, then further identical workers of an already assessed runtime. Not assessed: %s.',
                 AdvisoryEvaluator::MAX_ASSESSMENTS,
                 AdvisoryEvaluator::MAX_REPORT_FACTS,
+                AdvisoryEvaluator::MAX_REPORT_SOURCES,
                 count($omitted),
                 $listed,
             );
