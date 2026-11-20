@@ -894,6 +894,78 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertContains($catalogOnly['assessments'][0]['subject_id'], array_column($evaluation['assessments'], 'subject_id'));
     }
 
+    public function test_a_packaged_apache_worker_with_unknown_module_deletion_state_keeps_its_rank(): void
+    {
+        $inventory = $this->collectInventory('ubuntu-apache');
+        $template = $inventory['workers'][0];
+        self::assertSame('apache', $template['kind']);
+        self::assertFalse($template['apache_php_module_deleted']);
+        for ($child = 1; $child <= 14; ++$child) {
+            $copy = $template;
+            $copy['pid'] = 700 + $child;
+            $copy['id'] = 'apache-' . (700 + $child);
+            $copy['process_start_ticks_since_boot'] = 1;
+            $inventory['workers'][] = $copy;
+        }
+        $unknown = $template;
+        $unknown['pid'] = 799;
+        $unknown['id'] = 'apache-799';
+        $unknown['process_start_ticks_since_boot'] = 1;
+        $unknown['apache_php_module_deleted'] = null;
+        $inventory['workers'][] = $unknown;
+
+        [, $evaluation] = $this->evaluateInventory($inventory);
+
+        self::assertNotSame([], $evaluation['omitted_subject_ids'] ?? []);
+        self::assertContains('apache-799-1-1', array_column($evaluation['assessments'], 'subject_id'));
+        self::assertNotContains('apache-799-1-1', $evaluation['omitted_subject_ids'] ?? []);
+    }
+
+    public function test_an_inventory_too_large_for_the_fixed_evidence_fails_with_a_clear_error(): void
+    {
+        $catalog = AdvisoryCatalog::load();
+        $catalogFacts = 1;
+        foreach ($catalog->advisories as $advisory) {
+            $catalogFacts += 2 + count($advisory['mitigations']);
+        }
+        $inventory = $this->withPaddingFacts($this->collectInventory('debian-fpm'), AdvisoryEvaluator::MAX_REPORT_FACTS - $catalogFacts + 1);
+        [, $evaluation] = $this->evaluateInventory($inventory, $catalog);
+        // Nothing is assessed; the remaining overflow is inventory plus catalog evidence alone.
+        self::assertSame([], $evaluation['assessments']);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage(sprintf(
+            'inventory evidence (%d facts, %d sources) plus advisory evidence (%d facts, %d sources, 0 assessments) exceeds 1024 facts, 256 sources or 256 assessments',
+            AdvisoryEvaluator::MAX_REPORT_FACTS - $catalogFacts + 1,
+            count($inventory['sources']),
+            $catalogFacts,
+            count($evaluation['sources']),
+        ));
+        (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+    }
+
+    public function test_an_inventory_with_too_many_sources_for_the_fixed_evidence_fails_with_a_clear_error(): void
+    {
+        $inventory = $this->collectInventory('debian-fpm');
+        // Catalog-level sources: the catalog record plus every advisory and mitigation URL.
+        // Vendor-rule sources only appear for admitted targets, and none is admitted here.
+        $urls = [];
+        foreach (AdvisoryCatalog::load()->advisories as $advisory) {
+            $urls[$advisory['source_url']] = true;
+            foreach ($advisory['mitigations'] as $mitigation) {
+                $urls[$mitigation['source_url']] = true;
+            }
+        }
+        $catalogSources = 1 + count($urls);
+        $inventory = $this->withPaddingSources($inventory, AdvisoryEvaluator::MAX_REPORT_SOURCES - count($inventory['sources']) - $catalogSources + 1);
+        [, $evaluation] = $this->evaluateInventory($inventory);
+        self::assertSame([], $evaluation['assessments']);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage(sprintf('inventory evidence (%d facts, %d sources)', count($inventory['facts']), count($inventory['sources'])));
+        (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+    }
+
     public function test_a_catalog_at_the_source_url_cap_builds_a_report_within_the_source_limit(): void
     {
         // 32 advisories x (main + mitigation + matching vendor rule) = 96 distinct URLs, the cap.

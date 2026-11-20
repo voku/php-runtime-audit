@@ -423,7 +423,9 @@ final class AdvisoryEvaluator
                     'package_version' => $package['version'] ?? null,
                     'source_fact_id' => $this->factId($facts, 'worker.' . $workerIndex . '.apache_php_modules'),
                     'package_fact_id' => $package['fact_id'] ?? null,
-                    'deleted' => $worker['apache_php_module_deleted'] === true,
+                    // Unknown deletion state stays null: it is not evidence of a deleted module,
+                    // but it also never establishes an identity shared with other workers.
+                    'deleted' => $worker['apache_php_module_deleted'],
                     // A module whose deletion state is unknown has no established identity.
                     'runtime_path' => $worker['apache_php_module_deleted'] === false ? $modulePath : null,
                 ];

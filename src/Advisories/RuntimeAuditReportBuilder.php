@@ -36,7 +36,19 @@ final readonly class RuntimeAuditReportBuilder
         $facts = array_merge($inventory['facts'], $evaluation['facts']);
         $assessments = $evaluation['assessments'];
         if (count($sourcesById) > AdvisoryEvaluator::MAX_REPORT_SOURCES || count($facts) > AdvisoryEvaluator::MAX_REPORT_FACTS || count($assessments) > AdvisoryEvaluator::MAX_ASSESSMENTS) {
-            throw new RuntimeException('Generated local evidence exceeds schema collection limits.');
+            // The evaluator keeps assessments within the limits; what remains is evidence that is
+            // always emitted. Name both parts so an oversized inventory is recognisable as such.
+            throw new RuntimeException(sprintf(
+                'Generated local evidence exceeds schema collection limits: inventory evidence (%d facts, %d sources) plus advisory evidence (%d facts, %d sources, %d assessments) exceeds %d facts, %d sources or %d assessments.',
+                count($inventory['facts']),
+                count($inventory['sources']),
+                count($evaluation['facts']),
+                count($evaluation['sources']),
+                count($assessments),
+                AdvisoryEvaluator::MAX_REPORT_FACTS,
+                AdvisoryEvaluator::MAX_REPORT_SOURCES,
+                AdvisoryEvaluator::MAX_ASSESSMENTS,
+            ));
         }
 
         $timestamp = strtotime($inventory['observed_at']);

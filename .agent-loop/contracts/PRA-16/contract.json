@@ -1,0 +1,40 @@
+{
+    "acceptance_criteria": [
+        "A test with a packaged Apache fixture (ubuntu-apache) whose module deletion state is null shows that worker assessed, not omitted, among identical children.",
+        "A test with inventory facts that, with the bundled catalog, exceed 1024 gets a RuntimeException whose message names the inventory and catalog fact counts and the limit; same for sources."
+    ],
+    "acceptance_observations": [],
+    "approved_at": "2026-11-20T13:51:26+00:00",
+    "approved_by": "voku",
+    "base_commit": null,
+    "behavior_anchors": [],
+    "created_at": "2026-11-20T11:16:44+00:00",
+    "goal": "PR #46 CodeRabbit minors on 81bded7: (1) Apache targets keep a null apache_php_module_deleted state as deleted=null instead of false, so a packaged Apache worker whose deletion state is unknown never shares an identity (rank 0 kept); null stays falsy for patch-status logic. (2) When inventory plus catalog-level facts or sources alone exceed the 1024-fact or 256-source limit, the report is rejected with a clear error naming the inventory and catalog-level counts and the limit, instead of the generic schema-collection message; the documented behavior (report fails in that case) is unchanged.",
+    "kind": "task_contract",
+    "non_goals": [
+        "No change to admission, catalog caps, verdicts or collector bounds."
+    ],
+    "operating_prompt_manifest": null,
+    "operating_prompts": [],
+    "planned_by": "claude",
+    "revision": 1,
+    "schema_version": "1.0",
+    "scope": [
+        "src/Advisories/AdvisoryEvaluator.php",
+        "src/Advisories/RuntimeAuditReportBuilder.php",
+        "tests/Advisories/AdvisoryEvaluatorTest.php",
+        "CHANGELOG.md"
+    ],
+    "status": "approved",
+    "tags": [
+        "issue-38"
+    ],
+    "task_id": "PRA-16",
+    "updated_at": "2026-11-20T13:51:26+00:00",
+    "validation": [
+        "composer test",
+        "composer analyse",
+        "composer format-check",
+        "bash tests/fixtures/runtime/run-disposable-runtime-checks.sh"
+    ]
+}
