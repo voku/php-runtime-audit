@@ -28,7 +28,11 @@ $result = [
 if ($operation === 'write' || $operation === 'read') {
     $requestedId = is_string($_GET['id'] ?? null) ? $_GET['id'] : 'praprobe';
     session_id((string) preg_replace('/[^a-z0-9]/', '', $requestedId));
+    error_clear_last();
     $result['started'] = @session_start();
+    // Kept so a decode failure can be told apart from permission or locking failures.
+    $lastError = error_get_last();
+    $result['start_error'] = $result['started'] || !is_array($lastError) ? null : substr((string) $lastError['message'], 0, 200);
     if ($operation === 'write' && $result['started']) {
         $_SESSION['probe'] = 'pra-ground-truth';
     }

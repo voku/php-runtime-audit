@@ -5,7 +5,8 @@ Configuration-only inputs for `tests/fixtures/runtime/run-disposable-runtime-che
 official PHP container: `pools.conf` as an extra PHP-FPM pool file and `session.ini` as a
 `conf.d` fragment. Expected results live in `assert-disposable-session-report.php`.
 
-The scenarios contain no exploit payloads and never create or read session data. The
+The scenarios contain no exploit payloads. Only the ground-truth probe below
+creates and reads one plain-string session, inside the disposable container. The
 redis DSN credential is a fixture marker that must never appear in any report.
 
 ## Validation against ground truth

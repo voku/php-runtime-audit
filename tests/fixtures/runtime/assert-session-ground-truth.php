@@ -43,10 +43,16 @@ try {
         }
     }
     if ($truth['writer_read_back'] !== true) {
-        throw new RuntimeException('The probe could not read back its own session through the writer pool; ground truth is unusable.');
+        throw new RuntimeException('The writer pool did not persist the probe session to its own live store; ground truth is unusable.');
     }
     if ($truth['reader_decodes'] === true && $truth['shared_store'] !== true) {
         throw new RuntimeException('The reader decoded a session it cannot see; ground truth is inconsistent.');
+    }
+    // "Cannot decode" must be a real decode failure, not a permission, locking or I/O problem.
+    $readerError = is_string($truth['reader_start_error'] ?? null) ? $truth['reader_start_error'] : '';
+    if ($truth['shared_store'] === true && $truth['reader_decodes'] === false
+        && !str_contains($readerError, 'Failed to decode session object')) {
+        throw new RuntimeException('The reader could not read a shared session for a reason other than decoding (' . ($readerError === '' ? 'no error reported' : $readerError) . '); ground truth is unusable.');
     }
 
     $facts = [];

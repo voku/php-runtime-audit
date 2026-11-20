@@ -1,0 +1,33 @@
+{
+    "acceptance_criteria": [],
+    "acceptance_observations": [],
+    "approved_at": "2026-11-20T04:48:36+00:00",
+    "approved_by": "voku",
+    "base_commit": null,
+    "behavior_anchors": [],
+    "created_at": "2026-11-20T01:23:31+00:00",
+    "goal": "Harden the PRA-10 ground-truth validation so it cannot pass vacuously: (1) re-apply the reviewed-in-blindspot writer-persistence check (the writer's session file must exist in the writer's own live save_path) and live save_path normalisation (strip 0;/N;MODE; prefixes and trailing slashes, refuse depth N>0 or empty paths); (2) assert every expected two-pool scenario (fpm-shared-store-mismatch, fpm-isolated-stores, fpm-shared-store-same-serializer) was validated against ground truth at least once, and fail loudly on a two-pool scenario whose pools are not writer/reader; (3) record the reader's session_start error and treat 'cannot decode' as ground truth only when PHP reports a session decode failure, rejecting any other reader failure on a shared store as unusable ground truth; (4) fix the unwrapped README line.",
+    "kind": "task_contract",
+    "non_goals": [],
+    "operating_prompt_manifest": null,
+    "operating_prompts": [],
+    "planned_by": "claude",
+    "revision": 1,
+    "schema_version": "1.0",
+    "scope": [
+        "tests/fixtures/runtime/run-disposable-runtime-checks.sh",
+        "tests/fixtures/runtime/assert-session-ground-truth.php",
+        "tests/fixtures/runtime/session-probe/www/session.php",
+        "tests/fixtures/runtime/session-scenarios/README.md"
+    ],
+    "status": "approved",
+    "tags": [],
+    "task_id": "PRA-11",
+    "updated_at": "2026-11-20T04:48:36+00:00",
+    "validation": [
+        "composer test",
+        "composer analyse",
+        "composer format-check",
+        "bash tests/fixtures/runtime/run-disposable-runtime-checks.sh"
+    ]
+}

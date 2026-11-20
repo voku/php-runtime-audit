@@ -108,13 +108,14 @@ run_fixture apache 'php:8.5-apache@sha256:7cd25eb48f9763dfeabe8fda3939897aca2001
 
 # Session-store scenarios (issue #38 slice 4): configuration-only inputs from
 # tests/fixtures/runtime/session-scenarios, mounted read-only into the same pinned, network-less
-# images. No session data is created or read and no request is sent to any worker.
+# images. Only the two-pool scenarios send requests, to validate against ground truth below.
 session_fpm_image='php:8.2-fpm@sha256:77900c43ba8b8f2f61c73bcf68afbfb1b72a349052472e7640d402ef998754b3'
 session_apache_image='php:8.4-apache@sha256:c6527b06c772a2c3cae648ce58c23a2a12ed2fed41cdfb0619ea64be008cc601'
 scenario_root="$project_root/tests/fixtures/runtime/session-scenarios"
 session_assert="$project_root/tests/fixtures/runtime/assert-disposable-session-report.php"
 ground_truth_assert="$project_root/tests/fixtures/runtime/assert-session-ground-truth.php"
 session_probe="$project_root/tests/fixtures/runtime/session-probe"
+ground_truth_validated=()
 
 # The same production copy, packaged as the PHAR users download, so one scenario also proves the
 # PHAR reaches the same verdicts as the source tree.
@@ -178,8 +179,13 @@ run_session_fixture() {
         plan_args=("$fixture_dir/$label.plan.json")
     fi
     php "$session_assert" "$fixture_dir/$label.json" "$scenario" "${plan_args[@]}"
-    if [ "${#pools[@]}" -eq 2 ] && [ "${pools[0]}" = writer ] && [ "${pools[1]}" = reader ]; then
+    if [ "${#pools[@]}" -eq 2 ]; then
+        if [ "${pools[0]}" != writer ] || [ "${pools[1]}" != reader ]; then
+            echo "Two-pool scenario $scenario must name its pools [writer] then [reader] for ground-truth validation." >&2
+            exit 1
+        fi
         validate_session_ground_truth "$container" "$scenario_dir/pools.conf" "$label"
+        ground_truth_validated+=("$scenario")
     fi
 }
 
@@ -207,7 +213,22 @@ validate_session_ground_truth() {
     session_id="pragroundtruth$RANDOM"
     reader_info=$("${probe[@]}" "$reader_port" "$script" "op=info")
     writer_result=$("${probe[@]}" "$writer_port" "$script" "op=write&id=$session_id")
-    reader_path=$(php -r 'echo json_decode($argv[1], true, 8, JSON_THROW_ON_ERROR)["save_path"];' "$reader_info")
+    live_dir='$path = (string) json_decode($argv[1], true, 8, JSON_THROW_ON_ERROR)["save_path"];
+        // The files handler accepts "N;" / "N;MODE;" prefixes; the directory is the last segment.
+        $directory = substr((string) strrchr(";" . $path, ";"), 1);
+        if ($directory === "" || $directory[0] !== "/" || preg_match("/\\A[1-9][0-9]*;/", $path) === 1) {
+            // A depth N > 0 spreads sessions over subdirectories; this probe only checks flat stores.
+            fwrite(STDERR, "Probe needs an explicit absolute, flat save_path.\n");
+            exit(1);
+        }
+        echo rtrim($directory, "/");'
+    reader_path=$(php -r "$live_dir" "$reader_info")
+    writer_path=$(php -r "$live_dir" "$writer_result")
+    # The writer really persisted its session (not just set it in memory).
+    persisted=false
+    if docker_local exec "$container" test -s "$writer_path/sess_$session_id"; then
+        persisted=true
+    fi
     # Shared store: the writer's session file exists in the reader's live save_path before the
     # reader starts a session there (starting one would create an empty file itself).
     shared=false
@@ -219,12 +240,13 @@ validate_session_ground_truth() {
         $writer = json_decode($argv[1], true, 8, JSON_THROW_ON_ERROR);
         $reader = json_decode($argv[2], true, 8, JSON_THROW_ON_ERROR);
         echo json_encode([
-            "writer_read_back" => ($writer["read_back"] ?? null) === true,
+            "writer_read_back" => ($writer["read_back"] ?? null) === true && $argv[4] === "true",
             "shared_store" => $argv[3] === "true",
             "reader_decodes" => ($reader["started"] ?? null) === true && ($reader["read_back"] ?? null) === true,
+            "reader_start_error" => is_string($reader["start_error"] ?? null) ? $reader["start_error"] : null,
             "writer_serializer" => $writer["serializer"] ?? null,
             "reader_serializer" => $reader["serializer"] ?? null,
-        ], JSON_THROW_ON_ERROR);' "$writer_result" "$reader_result" "$shared" >"$fixture_dir/$label.ground-truth.json"
+        ], JSON_THROW_ON_ERROR);' "$writer_result" "$reader_result" "$shared" "$persisted" >"$fixture_dir/$label.ground-truth.json"
     php "$ground_truth_assert" "$fixture_dir/$label.json" "$fixture_dir/$label.ground-truth.json"
 }
 
@@ -237,3 +259,19 @@ run_session_fixture fpm "$session_fpm_image" php-fpm fpm-upload-progress-disable
 run_session_fixture fpm "$session_fpm_image" php-fpm fpm-files-backend
 run_session_fixture fpm "$session_fpm_image" php-fpm fpm-redis-dsn
 run_session_fixture apache "$session_apache_image" apache2 apache-files-backend-redacted-dsn
+
+# Every two-pool scenario must really have been validated against ground truth; a renamed,
+# skipped or removed scenario must not turn the validation into a silent no-op.
+for expected in fpm-shared-store-mismatch fpm-isolated-stores fpm-shared-store-same-serializer; do
+    validated=false
+    for scenario in "${ground_truth_validated[@]}"; do
+        if [ "$scenario" = "$expected" ]; then
+            validated=true
+        fi
+    done
+    if [ "$validated" != true ]; then
+        echo "Ground-truth validation did not run for $expected." >&2
+        exit 1
+    fi
+done
+echo "ground truth validated for ${#ground_truth_validated[@]} two-pool runs."
