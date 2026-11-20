@@ -1,0 +1,38 @@
+{
+    "acceptance_criteria": [],
+    "acceptance_observations": [],
+    "approved_at": "2026-11-19T22:04:09+00:00",
+    "approved_by": "voku",
+    "base_commit": null,
+    "behavior_anchors": [],
+    "created_at": "2026-11-19T22:00:43+00:00",
+    "goal": "Issue #38 slice 3 plus PRA-5 review follow-ups. (A) Collect session.save_handler and session.save_path read-only from the existing bounded config files per SAPI/root/context; never store a raw save_path that is not a plain filesystem path (URL/DSN/credential-bearing values are replaced by a scheme label plus a per-run keyed store-identity digest, so equality is comparable without exposing secrets); no session contents, no network probing. (B) CVE-2026-115560: add cross-context session-store correlation across FPM pools and web SAPIs (effective per-context values with pool-over-global precedence; unset save_path treated as a possibly shared default store; unset serializer as php default) so upload progress enabled in one context plus a different serializer in another context sharing (or possibly sharing) the same store yields configuration_exposure=needs_investigation and verdict needs_investigation (or potentially_affected when unpatched); missing evidence stays unknown; verdict rules from PRA-5 unchanged otherwise. (C) CVE-2026-126714: configuration_exposure from save_handler (observed files -> needs_investigation, unset -> unknown with PHP default files noted, observed non-files -> not_observed); exposure never changes the patch-driven verdict. (D) Follow-ups: treat yes and trimmed values as enabled; correct the misleading serializer reason; target-scoped derived_from_fact_ids; reject leading-zero catalog versions; README coverage wording.",
+    "kind": "task_contract",
+    "non_goals": [],
+    "operating_prompt_manifest": null,
+    "operating_prompts": [],
+    "planned_by": "claude",
+    "revision": 1,
+    "schema_version": "1.0",
+    "scope": [
+        "src/RuntimeInventory/RuntimeInventoryCollector.php",
+        "src/Advisories/AdvisoryEvaluator.php",
+        "src/Advisories/AdvisoryCatalog.php",
+        "tests/RuntimeInventory/RuntimeInventoryCollectorTest.php",
+        "tests/RuntimeInventory/RuntimeWorkerEvidenceTest.php",
+        "tests/Advisories/AdvisoryEvaluatorTest.php",
+        "tests/Advisories/AdvisoryCatalogTest.php",
+        "tests/fixtures/runtime",
+        "README.md",
+        "CHANGELOG.md"
+    ],
+    "status": "approved",
+    "tags": [],
+    "task_id": "PRA-8",
+    "updated_at": "2026-11-19T22:04:09+00:00",
+    "validation": [
+        "composer test",
+        "composer analyse",
+        "composer format-check"
+    ]
+}

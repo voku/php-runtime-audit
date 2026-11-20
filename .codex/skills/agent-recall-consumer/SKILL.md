@@ -117,6 +117,26 @@ vendor/bin/agent-recall-compiler prompt future-work --scope task
 
 It does not mutate workflow state or imply that follow-up work must be created.
 
+## Open-Ended Exploration
+
+When the user asks what else is worth exploring in a conversation, investigation, or technical discussion, use the context-light inquiry prompt rather than a task continuation or backlog generator:
+
+```bash
+vendor/bin/agent-recall-compiler prompt explore
+```
+
+This asks for one grounded question, its evidence, and a cheap **non-mutating** probe, or `NOTHING_TO_EXPLORE`. It needs neither a completed task nor repository context. Exploration must not silently become implementation, planning, authorization, or follow-up task creation. Use `next-step` for task outcome/continuation and `future-work` for optional investment after verified completion. The caller explicitly chooses whether to invoke the prompt; no automatic routing is implied.
+
+## Next-Step Reflection
+
+When a task reaches observed completion, stalls, or produces no substantiated solution, optionally ask the agent for its own highest-value next step:
+
+```bash
+vendor/bin/agent-recall-compiler prompt next-step
+```
+
+The prompt first checks the *actual* outcome and then distinguishes a still-authorized continuation from an alternate hypothesis, a blocked dependency, a candidate follow-up, or no useful next step. This is not an automatic workflow transition or permission to start new work. The consuming harness or `agent-loop` owns when to invoke it and whether any proposed action is approved. Use `future-work` for optional deepening after verified completion.
+
 ## Handoff TODO Cards
 
 Use the bundled `todo-card-handoff` L2 recipe when validated follow-up work must be persisted for another coding agent that will not have the current chat, Session-private context, hidden reasoning, or prior-agent memory:

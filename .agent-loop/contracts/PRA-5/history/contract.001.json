@@ -1,0 +1,32 @@
+{
+    "acceptance_criteria": [],
+    "acceptance_observations": [],
+    "approved_at": null,
+    "approved_by": null,
+    "base_commit": null,
+    "behavior_anchors": [],
+    "created_at": "2026-11-19T21:16:45+00:00",
+    "goal": "Update the PHP2Shell advisory catalog to the 2026-11-19 php-src advisories (GHSA-658j-r8rw-q6mx / CVE-2026-115560 upstream fixes 8.2.36, 8.3.37, 8.4.28, 8.5.13; add GHSA-fm2m-fjf5-v3cp / CVE-2026-126714) and replace the hardcoded 8.2-8.5 branch validation with version-agnostic branch/version consistency checks, without adding unsourced vendor backports or an unsourced 8.6 threshold (issue #38 slice 1)",
+    "kind": "task_contract",
+    "non_goals": [],
+    "operating_prompt_manifest": null,
+    "operating_prompts": [],
+    "planned_by": "claude",
+    "revision": 1,
+    "schema_version": "1.0",
+    "scope": [
+        "resources/advisories/php2shell/v1.json",
+        "src/Advisories/AdvisoryCatalog.php",
+        "tests/Advisories/AdvisoryCatalogTest.php",
+        "README.md"
+    ],
+    "status": "superseded",
+    "tags": [],
+    "task_id": "PRA-5",
+    "updated_at": "2026-11-19T21:19:56+00:00",
+    "validation": [
+        "composer test",
+        "composer analyse",
+        "composer format-check"
+    ]
+}
