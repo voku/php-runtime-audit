@@ -1,0 +1,158 @@
+{
+    "disagreements": [],
+    "mode": "governed",
+    "next_action": "perform the approved host-native implementation for PRA-4-MULTIRUNTIME before calling agent-loop finish PRA-4-MULTIRUNTIME",
+    "next_action_invocation": null,
+    "next_action_kind": "host_work",
+    "references": {
+        "approval": {
+            "approved_at": "2026-10-27T07:30:47+00:00",
+            "approved_by": "Lars Moelleken",
+            "contract_revision": 2,
+            "observation_mode": "checked",
+            "owner": "agent-loop",
+            "source": {
+                "path": ".agent-loop/contracts/PRA-4-MULTIRUNTIME/contract.json",
+                "sha256": "sha256:2b9ce979a782858cdfe640c572e986324b80774a60d231b05f85da4f13312db7"
+            },
+            "state": "current"
+        },
+        "board": {
+            "configuration": {
+                "mode": "json",
+                "source": {
+                    "path": ".agent-loop/todo/kanban.config.json",
+                    "sha256": "sha256:3c671de7928c7029fc557657eb0598b212f74bac2ebf4653645c6c4bf9e8b9ab"
+                }
+            },
+            "observation_mode": "checked",
+            "owner": "agent-kanban",
+            "state": "ad_hoc_task"
+        },
+        "contract": {
+            "acceptance_criteria": [
+                "Discover PHP 5.x, 7.x, and 8.x side-by-side runtime instances using bounded path/process discovery with strict path validation and no shell interpolation; report discovery gaps and truncation.",
+                "Keep package-installed runtimes, executable files, CLI runtime probes, active FPM workers, and Apache PHP modules as distinct subjects with stable unique identities and exact source provenance; never reduce them to one host PHP version.",
+                "Bind each runtime-specific SAPI, package provenance, worker executable identity, configuration, advisory applicability, and patch verdict to its exact runtime subject; never attribute one installed PHP package version to multiple or mismatched running workers; ambiguity remains unknown.",
+                "Assess installed but inactive runtimes separately from active workers, and identify active runtimes whose binaries or packages are missing, deleted, or unprovable without treating package presence as proof of loaded worker identity.",
+                "Add offline fixtures and positive/negative tests for PHP 5.6, 7.4, 8.2, two or more installed versions, multiple active workers, missing or deleted executables, conflicting package/runtime versions, path traversal, malformed names, and discovery limits.",
+                "Preserve existing PHP 8.2–8.5 behavior and evidence semantics; clarify in documentation that PHP 8.2+ is the audit-tool runtime requirement while target hosts may contain PHP 5.x/7.x.",
+                "Update the roadmap to record PRA-4-MAINLINE complete with its existing PHP 8.5 container-smoke limitation and keep Local MVP gated on PRA-5 remediation-plan completion; do not claim that the Local MVP is complete.",
+                "Run every required Contract validation on the exact candidate, obtain distinct fresh correctness and blind-spot reviews, and bind deterministic verification to that same candidate."
+            ],
+            "goal": "Extend the local PHP inventory and assessment to identify legacy PHP 5.x and 7.x installations and multiple concurrent PHP runtime instances without conflating installed packages, executable files, CLI runtimes, web workers, or configuration. Keep every applicability and patch result bound to exact runtime evidence.",
+            "observation_mode": "checked",
+            "owner": "agent-loop",
+            "revision": 2,
+            "run_revision": 2,
+            "source": {
+                "path": ".agent-loop/contracts/PRA-4-MULTIRUNTIME/contract.json",
+                "sha256": "sha256:2b9ce979a782858cdfe640c572e986324b80774a60d231b05f85da4f13312db7"
+            },
+            "state": "approved"
+        },
+        "edit": {
+            "observation_mode": "checked",
+            "owner": "agent-loop",
+            "state": "none"
+        },
+        "execution_contract": {
+            "contract_revision": 2,
+            "contract_source": {
+                "path": ".agent-loop/contracts/PRA-4-MULTIRUNTIME/contract.json",
+                "sha256": "sha256:2b9ce979a782858cdfe640c572e986324b80774a60d231b05f85da4f13312db7"
+            },
+            "observation_mode": "checked",
+            "owner": "agent-loop",
+            "required": false,
+            "state": "not_required"
+        },
+        "learning": {
+            "observation_mode": "checked",
+            "owner": "agent-learning",
+            "run_id": "run:PRA-4-MULTIRUNTIME:8f7d2bb5829e50c2",
+            "state": "missing"
+        },
+        "map": {
+            "observation_mode": "checked",
+            "owner": "agent-map",
+            "path": ".agent-loop/map/php-symbols.json",
+            "snapshot": "sha256:67b427a28cf84c9edb0b426e3bba46a0ec718c28601de523ef9396962e18a242",
+            "source": {
+                "path": ".agent-loop/map/php-symbols.json",
+                "sha256": "sha256:525d897438db2a132f2aab859a97e6855631033803b935f10a5d5dee417006d2"
+            },
+            "state": "ready"
+        },
+        "outcome_lineage": {
+            "observation_mode": "checked",
+            "owner": "agent-learning",
+            "run_id": "run:PRA-4-MULTIRUNTIME:8f7d2bb5829e50c2",
+            "state": "run_bound"
+        },
+        "recall": {
+            "bundle_sha256": "cbdb880920c997d4844724514d7edde81ee67f95028814bc16454fae52fb9943",
+            "compilation_id": "compilation.PRA-4-MULTIRUNTIME.2026-10-27-073049.e5731077",
+            "observation_mode": "checked",
+            "owner": "agent-recall-compiler",
+            "snapshot_sha256": "290e83082682611cde26f23e68c212eb7ad674bb088490815f8ca6442019b9c6",
+            "source": {
+                "path": ".agent-loop/recall/PRA-4-MULTIRUNTIME/meta.json",
+                "sha256": "sha256:e11098634511455d34eb39f9a03bbec9993e894bb3bd0b9f9efc9dd7e78b9241"
+            },
+            "state": "compiled"
+        },
+        "review": {
+            "observation_mode": "checked",
+            "owner": "agent-recall-compiler",
+            "path": ".agent-loop/recall/PRA-4-MULTIRUNTIME/reviews/PRA-4-MULTIRUNTIME.blindspots.json",
+            "state": "missing"
+        },
+        "search_index": {
+            "observation_mode": "checked",
+            "owner": "agent-map",
+            "path": ".agent-loop/map/search.sqlite",
+            "state": "missing"
+        },
+        "session": {
+            "base_commit": "0b5e2c0c087710da6ec25c5510f7f830c602ae33",
+            "ephemeral": false,
+            "observation_mode": "checked",
+            "owner": "agent-session",
+            "session_id": "2026-10-27-pra-4-multiruntime-r2-4e4b94a7",
+            "source": {
+                "path": ".agent-loop/sessions/2026-10-27-pra-4-multiruntime-r2-4e4b94a7/session.json",
+                "sha256": "sha256:567c191e6ed143b45a7350bae27c1ed3c0708eddaeea570d5c8f51a0f978fdd9"
+            },
+            "state": "active",
+            "task_id": "PRA-4-MULTIRUNTIME"
+        },
+        "verification": {
+            "action": "agent-loop workflow status PRA-4-MULTIRUNTIME --format=json",
+            "action_invocation": {
+                "arguments": [
+                    "workflow",
+                    "status",
+                    "PRA-4-MULTIRUNTIME",
+                    "--format=json"
+                ],
+                "executable": "agent-loop",
+                "template": false
+            },
+            "gate": "execution_review",
+            "implementation_snapshot": "sha256:5258c453a050666b88945650340b91a608a1e3b0487a6fcd9d337b2e291dc7bd",
+            "observation_mode": "checked",
+            "owner": "agent-loop",
+            "reason": "independent review pipeline is incomplete at stage investigate",
+            "recall_outcome_draft": null,
+            "repair_action": null,
+            "repair_invocation": null,
+            "state": "blocked",
+            "validation_failed": false
+        }
+    },
+    "run_id": "run:PRA-4-MULTIRUNTIME:8f7d2bb5829e50c2",
+    "schema_version": "1.0",
+    "state": "incomplete",
+    "task_id": "PRA-4-MULTIRUNTIME"
+}

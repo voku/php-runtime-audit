@@ -1,0 +1,10 @@
+{
+    "contract": {
+        "path": "contract.json",
+        "revision": 2,
+        "sha256": "sha256:2b9ce979a782858cdfe640c572e986324b80774a60d231b05f85da4f13312db7"
+    },
+    "kind": "governed_recall_input",
+    "run_id": "run:PRA-4-MULTIRUNTIME:8f7d2bb5829e50c2",
+    "schema_version": "1.0"
+}
