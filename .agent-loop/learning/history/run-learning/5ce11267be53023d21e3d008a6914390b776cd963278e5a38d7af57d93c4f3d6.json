@@ -1,0 +1,15 @@
+{
+    "schema_version": "1.0",
+    "kind": "run_learning_decision",
+    "run_id": "run:PRA-14:080e056f49ddf8f6",
+    "decision": "follow_up_required",
+    "decided_by": "claude",
+    "decided_at": "2026-11-20T08:26:13+00:00",
+    "reason": "Budget drops to 13 targets with 19 advisories (unpackaged containers with >=13 workers omit CLI); max(1) zero-budget, byte and source limits (PRA-15); 8.5/8.4+-only CVEs yield unknown on other branches; finish does not re-run validation after an environment-only failure.",
+    "finding_ids": [],
+    "follow_up_ref": "issue#38",
+    "contract_revision": 1,
+    "implementation_snapshot": "sha256:e2a479446906fce172b36e1d9156db297d04741e701bb8c1e219abaf85a15d9a",
+    "validation_evidence_sha256": "sha256:5e29d525c56333fa3e9aed61e8a42b8440d87012738a8c0ed3c8e035c0adbc3d",
+    "review_evidence_sha256": "sha256:96f72751de1426507b60a69f66acc4802383e6edc8ce143e5ecb66696561f0d4"
+}

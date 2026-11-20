@@ -32,7 +32,8 @@ final class AdvisoryEvaluatorTest extends TestCase
 
         /** @var RuntimeAuditReport $report */
         $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
-        self::assertSame(16, $report['summary']['assessment_count']);
+        // 4 runtime targets x 19 bundled advisories.
+        self::assertSame(76, $report['summary']['assessment_count']);
         self::assertSame(5, $report['summary']['coverage_count']);
         self::assertSame('unknown', $report['summary']['compromise_evidence']);
         self::assertSame('coverage', $report['records'][1]['record_type']);

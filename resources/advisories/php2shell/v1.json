@@ -70,6 +70,160 @@
         {"setting": "session.save_handler", "value": "a backend that replaces records atomically instead of files; the built-in files handler still needs the PHP update", "effect": "partial", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-fm2m-fjf5-v3cp"}
       ],
       "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-129289",
+      "title": "PHP-FPM request smuggling through an unread HTTP request body",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-qc49-hpvq-g2w6",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.2": "8.2.36", "8.3": "8.3.37", "8.4": "8.4.28", "8.5": "8.5.13"},
+      "mitigations": [
+        {"setting": "nginx fastcgi_keep_conn / Apache mod_proxy_fcgi enablereuse", "value": "off (the front end closes its backend connection after every request)", "effect": "blocks-described-vector", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-qc49-hpvq-g2w6"}
+      ],
+      "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-129496",
+      "title": "PHP timezone cache use-after-free",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-gr4f-wgx5-jpfv",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.2": "8.2.36", "8.3": "8.3.37", "8.4": "8.4.28", "8.5": "8.5.13"},
+      "mitigations": [
+        {"setting": "error_log", "value": "a non-file destination such as syslog, with startup diagnostics (e.g. an invalid date.timezone) corrected and all workers restarted", "effect": "partial", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-gr4f-wgx5-jpfv"}
+      ],
+      "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-129474",
+      "title": "PHP use-after-free in magic method backtraces",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-8mjj-2r7p-4hg2",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.5": "8.5.13"},
+      "mitigations": [
+        {"setting": "zend.exception_ignore_args", "value": "1 in the configuration used by the affected workers", "effect": "blocks-described-vector", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-8mjj-2r7p-4hg2"},
+        {"setting": "fatal_error_backtraces", "value": "0 on PHP 8.5", "effect": "blocks-described-vector", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-8mjj-2r7p-4hg2"}
+      ],
+      "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-129182",
+      "title": "PHP use-after-free via last_fatal_error_backtrace after shutdown",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-2fjv-p558-g82m",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.5": "8.5.13"},
+      "mitigations": [
+        {"setting": "fatal_error_backtraces", "value": "0, and request-specific configuration must not re-enable it", "effect": "partial", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-2fjv-p558-g82m"}
+      ],
+      "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-129481",
+      "title": "PHP use-after-free after interrupted session shutdown",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-g3vh-838c-65v7",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.3": "8.3.37", "8.4": "8.4.28", "8.5": "8.5.13"},
+      "mitigations": [
+        {"setting": "pm.max_requests", "value": "1 for PHP-FPM pools (performance cost)", "effect": "partial", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-g3vh-838c-65v7"}
+      ],
+      "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-129291",
+      "title": "PHP-FPM epoll use-after-free (local privilege escalation)",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-jm4m-qfqx-967m",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.2": "8.2.36", "8.3": "8.3.37", "8.4": "8.4.28", "8.5": "8.5.13"},
+      "mitigations": [
+        {"setting": "catch_workers_output", "value": "no in affected pools", "effect": "blocks-described-vector", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-jm4m-qfqx-967m"}
+      ],
+      "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-127960",
+      "title": "PHP denial of service through folded HTTP response headers",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-mmf9-xm3v-hg2x",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.2": "8.2.36", "8.3": "8.3.37", "8.4": "8.4.28", "8.5": "8.5.13"},
+      "mitigations": [
+        {"setting": "request_terminate_timeout", "value": "a bounded PHP-FPM request timeout (limits exposure, does not remove the parsing behaviour)", "effect": "partial", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-mmf9-xm3v-hg2x"}
+      ],
+      "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-128064",
+      "title": "PHP mixed-case HTTPS and FTPS URLs can expose data in plaintext",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-f6gg-rchx-xw8j",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.2": "8.2.36", "8.3": "8.3.37", "8.4": "8.4.28", "8.5": "8.5.13"},
+      "mitigations": [],
+      "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-128090",
+      "title": "PHP PHAR OpenSSL signature bypass via algorithm downgrade",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-68fq-fh7h-f8gr",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.2": "8.2.36", "8.3": "8.3.37", "8.4": "8.4.28", "8.5": "8.5.13"},
+      "mitigations": [],
+      "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-15353",
+      "title": "PHP SOAP information disclosure through malformed array dimensions",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-q23r-hr55-xmpg",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.2": "8.2.36", "8.3": "8.3.37", "8.4": "8.4.28", "8.5": "8.5.13"},
+      "mitigations": [],
+      "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-129506",
+      "title": "PHP SOAP use-after-free when processing DTD entity references",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-4646-p932-gw34",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.2": "8.2.36", "8.3": "8.3.37", "8.4": "8.4.28", "8.5": "8.5.13"},
+      "mitigations": [],
+      "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-129501",
+      "title": "PHP double free during DOM XML serialization",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-x8r7-mg3g-74hg",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.4": "8.4.28", "8.5": "8.5.13"},
+      "mitigations": [],
+      "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-129438",
+      "title": "PHP incorrect RFC 3986 URI serialization for oversized input",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-mg3p-mxj9-g2mm",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.5": "8.5.13"},
+      "mitigations": [],
+      "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-129292",
+      "title": "PHP-FPM status endpoint XSS via unescaped user and script fields",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-3mg3-cr28-46gc",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.2": "8.2.36", "8.3": "8.3.37", "8.4": "8.4.28", "8.5": "8.5.13"},
+      "mitigations": [
+        {"setting": "pm.status_path", "value": "disabled, or its full HTML output not used", "effect": "blocks-described-vector", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-3mg3-cr28-46gc"}
+      ],
+      "vendor_rules": []
+    },
+    {
+      "cve": "CVE-2026-129538",
+      "title": "PHP-CGI out-of-bounds read and write during PATH_INFO correction",
+      "source_url": "https://github.com/php/php-src/security/advisories/GHSA-5j3f-64r7-f564",
+      "revision": "2026-11-19",
+      "fixed_upstream": {"8.2": "8.2.36", "8.3": "8.3.37", "8.4": "8.4.28", "8.5": "8.5.13"},
+      "mitigations": [
+        {"setting": "cgi.fix_pathinfo", "value": "0 for php-cgi (PHP-FPM and Apache mod_php are not affected)", "effect": "blocks-described-vector", "source_url": "https://github.com/php/php-src/security/advisories/GHSA-5j3f-64r7-f564"}
+      ],
+      "vendor_rules": []
     }
   ]
 }
