@@ -35,28 +35,46 @@ foreach ([
 }
 // BEGIN_REQUEST (responder, no keep-alive), PARAMS, empty PARAMS, empty STDIN.
 fwrite($socket, $record(1, pack('nCx5', 1, 0)) . $record(4, $params) . $record(4, '') . $record(5, ''));
-$stdout = '';
-while (!feof($socket)) {
-    $header = fread($socket, 8);
-    if (!is_string($header) || strlen($header) < 8) {
-        break;
+/**
+ * Read exactly $length bytes or fail: network streams may return short reads.
+ *
+ * @param resource $socket
+ */
+function readExactly($socket, int $length): string
+{
+    $buffer = '';
+    while (strlen($buffer) < $length) {
+        $chunk = fread($socket, max(1, $length - strlen($buffer)));
+        if (!is_string($chunk) || $chunk === '') {
+            $meta = stream_get_meta_data($socket);
+            fwrite(STDERR, 'FastCGI response ended early (' . ($meta['timed_out'] ? 'timeout' : 'EOF') . ").\n");
+            exit(1);
+        }
+        $buffer .= $chunk;
     }
-    $fields = unpack('Cversion/Ctype/nid/nlength/Cpadding', $header);
+
+    return $buffer;
+}
+
+$stdout = '';
+$ended = false;
+while (!$ended) {
+    $fields = unpack('Cversion/Ctype/nid/nlength/Cpadding', readExactly($socket, 8));
     if (!is_array($fields)) {
-        break;
+        fwrite(STDERR, "FastCGI record header could not be parsed.\n");
+        exit(1);
     }
     $contentLength = is_int($fields['length'] ?? null) ? $fields['length'] : 0;
     $paddingLength = is_int($fields['padding'] ?? null) ? $fields['padding'] : 0;
-    $content = $contentLength > 0 ? (string) stream_get_contents($socket, $contentLength) : '';
+    $content = $contentLength > 0 ? readExactly($socket, $contentLength) : '';
     if ($paddingLength > 0) {
-        fread($socket, $paddingLength);
+        readExactly($socket, $paddingLength);
     }
     if ($fields['type'] === 6) {
         $stdout .= $content;
     }
-    if ($fields['type'] === 3) {
-        break;
-    }
+    // END_REQUEST closes the response.
+    $ended = $fields['type'] === 3;
 }
 $separator = strpos($stdout, "\r\n\r\n");
 if ($separator === false) {

@@ -1,0 +1,36 @@
+{
+    "acceptance_criteria": [],
+    "acceptance_observations": [],
+    "approved_at": "2026-11-20T05:35:30+00:00",
+    "approved_by": "voku",
+    "base_commit": null,
+    "behavior_anchors": [],
+    "created_at": "2026-11-20T05:25:28+00:00",
+    "goal": "Follow-ups to PRA-12 and the CodeRabbit review on PR #46. (1) The target budget also respects the report's 1024-fact guard: the evaluator computes the facts left after inventory and per-advisory facts and caps targets by the per-target fact cost, so a host with very many PHP packages degrades to a blocked coverage entry instead of aborting. (2) Ranking prefers distinct runtimes: the first FPM worker per (executable, version) ranks with web workers, further identical pool children rank after packages, so a CLI of another PHP version or a package is not pushed out by identical children. (3) The report summary carries an omitted_subject_count. (4) Gap text wording is clear and truncation is marked. (5) CodeRabbit: the ground truth records the reader's start status and an isolated-store result is accepted only when the reader started successfully without finding the writer's value; the FastCGI client reads exactly the required header, content and padding bytes and fails on EOF or timeout. No verdict logic changes.",
+    "kind": "task_contract",
+    "non_goals": [],
+    "operating_prompt_manifest": null,
+    "operating_prompts": [],
+    "planned_by": "claude",
+    "revision": 1,
+    "schema_version": "1.0",
+    "scope": [
+        "src/Advisories/AdvisoryEvaluator.php",
+        "src/Advisories/RuntimeAuditReportBuilder.php",
+        "tests/Advisories/AdvisoryEvaluatorTest.php",
+        "tests/fixtures/runtime/run-disposable-runtime-checks.sh",
+        "tests/fixtures/runtime/assert-session-ground-truth.php",
+        "tests/fixtures/runtime/session-probe/fastcgi-request.php",
+        "CHANGELOG.md"
+    ],
+    "status": "approved",
+    "tags": [],
+    "task_id": "PRA-13",
+    "updated_at": "2026-11-20T05:35:30+00:00",
+    "validation": [
+        "composer test",
+        "composer analyse",
+        "composer format-check",
+        "bash tests/fixtures/runtime/run-disposable-runtime-checks.sh"
+    ]
+}

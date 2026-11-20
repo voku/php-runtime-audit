@@ -16,7 +16,7 @@ use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
  * @phpstan-import-type AdvisoryEvaluation from AdvisoryEvaluator
  * @phpstan-import-type AdvisoryAssessment from AdvisoryEvaluator
  * @phpstan-import-type RuntimeCoverage from RuntimeInventoryCollector
- * @phpstan-type RuntimeAuditReport array{report_schema_version: '1.0', summary: array{observed_at: string, distribution: string|null, distribution_version: string|null, container: bool|null, web_worker_count: int, coverage_count: int, assessment_count: int, verdict_counts: array<string, int>, compromise_evidence: 'unknown'}, records: list<array<string, mixed>>}
+ * @phpstan-type RuntimeAuditReport array{report_schema_version: '1.0', summary: array{observed_at: string, distribution: string|null, distribution_version: string|null, container: bool|null, web_worker_count: int, coverage_count: int, assessment_count: int, omitted_subject_count: int, verdict_counts: array<string, int>, compromise_evidence: 'unknown'}, records: list<array<string, mixed>>}
  */
 final readonly class RuntimeAuditReportBuilder
 {
@@ -35,7 +35,7 @@ final readonly class RuntimeAuditReportBuilder
         }
         $facts = array_merge($inventory['facts'], $evaluation['facts']);
         $assessments = $evaluation['assessments'];
-        if (count($sourcesById) > 256 || count($facts) > 1024 || count($assessments) > AdvisoryEvaluator::MAX_ASSESSMENTS) {
+        if (count($sourcesById) > 256 || count($facts) > AdvisoryEvaluator::MAX_REPORT_FACTS || count($assessments) > AdvisoryEvaluator::MAX_ASSESSMENTS) {
             throw new RuntimeException('Generated local evidence exceeds schema collection limits.');
         }
 
@@ -69,17 +69,19 @@ final readonly class RuntimeAuditReportBuilder
         if ($omitted !== []) {
             // Never imply full coverage: subjects beyond the assessment budget are reported as not assessed.
             $listed = implode(', ', array_slice($omitted, 0, 12)) . (count($omitted) > 12 ? ', ...' : '');
+            $gap = sprintf(
+                'The report budget (%d assessments, one per advisory and runtime subject, within the %d-fact evidence limit) was reached, so %d runtime subject(s) were not assessed. Running web workers were assessed first, then CLI runtimes, then packages, then further identical workers of an already assessed runtime. Not assessed: %s.',
+                AdvisoryEvaluator::MAX_ASSESSMENTS,
+                AdvisoryEvaluator::MAX_REPORT_FACTS,
+                count($omitted),
+                $listed,
+            );
             $coverageEntries[] = [
                 'subject_id' => $inventory['asset_id'],
                 'check_id' => 'advisory.assessment-budget',
                 'status' => 'blocked',
                 'evidence_ids' => [],
-                'gap' => substr(sprintf(
-                    '%d runtime subject(s) were not assessed: the advisory catalog times the runtime targets exceeds the %d-assessment report budget. Running web workers were assessed first, then CLI runtimes, then packages. Not assessed: %s.',
-                    count($omitted),
-                    AdvisoryEvaluator::MAX_ASSESSMENTS,
-                    $listed,
-                ), 0, 1000),
+                'gap' => strlen($gap) > 1000 ? substr($gap, 0, 997) . '...' : $gap,
             ];
         }
         $coverageRecord = [
@@ -103,6 +105,7 @@ final readonly class RuntimeAuditReportBuilder
             'web_worker_count' => count($inventory['workers']),
             'coverage_count' => count($coverageEntries),
             'assessment_count' => count($assessments),
+            'omitted_subject_count' => count($omitted),
             'verdict_counts' => $this->verdictCounts($assessments),
             'compromise_evidence' => 'unknown',
         ];

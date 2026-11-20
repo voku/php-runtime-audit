@@ -242,6 +242,7 @@ validate_session_ground_truth() {
         echo json_encode([
             "writer_read_back" => ($writer["read_back"] ?? null) === true && $argv[4] === "true",
             "shared_store" => $argv[3] === "true",
+            "reader_started" => ($reader["started"] ?? null) === true,
             "reader_decodes" => ($reader["started"] ?? null) === true && ($reader["read_back"] ?? null) === true,
             "reader_start_error" => is_string($reader["start_error"] ?? null) ? $reader["start_error"] : null,
             "writer_serializer" => $writer["serializer"] ?? null,

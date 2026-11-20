@@ -709,6 +709,7 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertLessThanOrEqual(AdvisoryEvaluator::MAX_ASSESSMENTS, $report['summary']['assessment_count']);
         $omitted = $evaluation['omitted_subject_ids'] ?? [];
         self::assertCount(3, $omitted);
+        self::assertSame(3, $report['summary']['omitted_subject_count']);
         foreach ($omitted as $subjectId) {
             self::assertStringStartsWith('package-', $subjectId);
         }
@@ -729,7 +730,85 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertSame('blocked', $budgetEntry['status']);
         self::assertIsString($budgetEntry['gap']);
         self::assertStringContainsString('3 runtime subject(s) were not assessed', $budgetEntry['gap']);
+        self::assertStringContainsString('further identical workers', $budgetEntry['gap']);
         self::assertStringContainsString($omitted[0], $budgetEntry['gap']);
+    }
+
+    public function test_fact_budget_keeps_a_host_with_many_php_packages_reportable(): void
+    {
+        $catalog = self::syntheticCatalogWithAdvisoryCount(19);
+        $inventory = $this->withExtraPhpPackages($this->collectInventory('debian-fpm'), 400);
+
+        [, $evaluation] = $this->evaluateInventory($inventory, $catalog);
+        $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+
+        $observationFacts = 0;
+        foreach ($report['records'] as $record) {
+            if (($record['record_type'] ?? null) === 'observation' && is_array($record['facts'] ?? null)) {
+                $observationFacts += count($record['facts']);
+            }
+        }
+        self::assertLessThanOrEqual(AdvisoryEvaluator::MAX_REPORT_FACTS, $observationFacts);
+        self::assertGreaterThan(0, $report['summary']['omitted_subject_count']);
+        self::assertSame(count($evaluation['omitted_subject_ids'] ?? []), $report['summary']['omitted_subject_count']);
+        // The running web worker is always among the assessed subjects.
+        self::assertNotSame([], array_filter(
+            array_column($evaluation['assessments'], 'subject_id'),
+            static fn(string $id): bool => str_starts_with($id, 'worker-'),
+        ));
+    }
+
+    public function test_identical_pool_children_do_not_push_out_the_cli_or_packages(): void
+    {
+        $catalog = self::syntheticCatalogWithAdvisoryCount(19);
+        $inventory = $this->collectInventory('debian-fpm');
+        $master = $inventory['workers'][0];
+        for ($child = 1; $child <= 15; ++$child) {
+            $copy = $master;
+            $copy['id'] = 'worker-' . (500 + $child) . '-1';
+            $copy['pid'] = 500 + $child;
+            $inventory['workers'][] = $copy;
+        }
+
+        [, $evaluation] = $this->evaluateInventory($inventory, $catalog);
+        $assessed = array_values(array_unique(array_column($evaluation['assessments'], 'subject_id')));
+
+        self::assertContains($master['id'], $assessed);
+        self::assertNotSame([], array_filter($assessed, static fn(string $id): bool => str_starts_with($id, 'cli-')));
+        self::assertNotSame([], array_filter($assessed, static fn(string $id): bool => str_starts_with($id, 'package-')));
+        $omitted = $evaluation['omitted_subject_ids'] ?? [];
+        self::assertNotSame([], $omitted);
+        foreach ($omitted as $subjectId) {
+            self::assertMatchesRegularExpression('/\Aworker-5[0-9]{2}-1\z/', $subjectId);
+        }
+    }
+
+    public function test_a_worker_on_a_deleted_module_is_never_ranked_as_an_identical_child(): void
+    {
+        $catalog = self::syntheticCatalogWithAdvisoryCount(19);
+        $inventory = $this->collectInventory('ubuntu-apache');
+        $template = $inventory['workers'][0];
+        self::assertSame('apache', $template['kind']);
+        for ($child = 1; $child <= 14; ++$child) {
+            $copy = $template;
+            $copy['pid'] = 700 + $child;
+            $copy['id'] = 'apache-' . (700 + $child);
+            $copy['process_start_ticks_since_boot'] = 1;
+            $inventory['workers'][] = $copy;
+        }
+        $stale = $template;
+        $stale['pid'] = 799;
+        $stale['id'] = 'apache-799';
+        $stale['process_start_ticks_since_boot'] = 1;
+        $stale['apache_php_module_deleted'] = true;
+        $inventory['workers'][] = $stale;
+
+        [, $evaluation] = $this->evaluateInventory($inventory, $catalog);
+        $assessed = array_values(array_unique(array_column($evaluation['assessments'], 'subject_id')));
+
+        self::assertNotSame([], $evaluation['omitted_subject_ids'] ?? []);
+        self::assertContains('apache-799-1-1', $assessed);
+        self::assertNotContains('apache-799-1-1', $evaluation['omitted_subject_ids'] ?? []);
     }
 
     public static function syntheticCatalogWithAdvisoryCount(int $count): AdvisoryCatalog

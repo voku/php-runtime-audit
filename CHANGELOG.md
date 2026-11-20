@@ -27,6 +27,7 @@ for current delivery gates). Entries below track notable merges to `main`.
 
 ### Fixed
 
+- The assessment budget also respects the 1024-fact evidence limit, so a host with very many PHP packages is reported with a coverage gap instead of aborting. Identical FPM pool workers no longer push out CLI runtimes or packages, and the summary carries `omitted_subject_count`. In the disposable checks, an isolated-store result now requires a reader that actually started, and the FastCGI probe reads complete records (#38).
 - A large advisory catalog on a host with many PHP runtimes no longer aborts the whole report. The evaluator now stays within a 256-assessment budget, assessing running web workers first, then CLI runtimes, then packages. Subjects beyond the budget are listed in a `blocked` `advisory.assessment-budget` coverage entry, and the remediation plan warns that absence of a proposal is not evidence of safety (#38).
 - `session.upload_progress.enabled = yes` (and other trimmed ini boolean spellings) is now recognised as enabled (#38).
 - FPM `php_flag[...]` / `php_admin_flag[...]` pool directives are now parsed like `php_value` / `php_admin_value` (#38).

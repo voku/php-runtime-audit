@@ -37,7 +37,7 @@ try {
     }
     $report = readJson($argv[1]);
     $truth = readJson($argv[2]);
-    foreach (['writer_read_back', 'shared_store', 'reader_decodes'] as $key) {
+    foreach (['writer_read_back', 'shared_store', 'reader_started', 'reader_decodes'] as $key) {
         if (!is_bool($truth[$key] ?? null)) {
             throw new RuntimeException('Ground truth is missing ' . $key . '.');
         }
@@ -47,6 +47,10 @@ try {
     }
     if ($truth['reader_decodes'] === true && $truth['shared_store'] !== true) {
         throw new RuntimeException('The reader decoded a session it cannot see; ground truth is inconsistent.');
+    }
+    // An isolated store is only proven by a healthy reader that started and did not see the writer's value.
+    if ($truth['shared_store'] === false && $truth['reader_started'] !== true) {
+        throw new RuntimeException('The reader could not start a session in its own store; an isolated-store result is unusable as ground truth.');
     }
     // "Cannot decode" must be a real decode failure, not a permission, locking or I/O problem.
     $readerError = is_string($truth['reader_start_error'] ?? null) ? $truth['reader_start_error'] : '';

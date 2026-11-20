@@ -33,6 +33,10 @@ final class AdvisoryEvaluator
      * output including its facts, so 256 keeps a full report well inside the 1 MiB evidence limit.
      */
     public const MAX_ASSESSMENTS = 256;
+    /** The evidence schema's per-observation fact limit, shared by inventory and advisory facts. */
+    public const MAX_REPORT_FACTS = 1024;
+    /** Advisories that add a per-target configuration_exposure fact (see assess()). */
+    private const CONFIGURATION_EXPOSURE_CVES = ['CVE-2026-115560', 'CVE-2026-126714'];
 
     /**
      * @phpstan-param RuntimeInventory $inventory
@@ -47,7 +51,7 @@ final class AdvisoryEvaluator
         if ($targets === []) {
             $targets[] = ['id' => 'web-runtime-unknown', 'subject_id' => 'local-host', 'kind' => 'unknown', 'version' => null, 'package' => null, 'package_version' => null, 'source_fact_id' => null, 'package_fact_id' => null, 'deleted' => false, 'provenance_verified' => false, 'provenance_fact_id' => null];
         }
-        [$targets, $omittedSubjectIds] = $this->budgetTargets($targets, count($catalog->advisories));
+        [$targets, $omittedSubjectIds] = $this->budgetTargets($targets, $this->targetBudget($catalog, count($inventory['facts'])));
 
         /** @var list<AdvisorySource> $sources */
         $sources = [[
@@ -198,6 +202,25 @@ final class AdvisoryEvaluator
     }
 
     /**
+     * How many runtime targets fit: at most MAX_ASSESSMENTS assessments, and at most the facts that
+     * remain under the schema limit after the inventory's own facts and the per-advisory facts.
+     */
+    private function targetBudget(AdvisoryCatalog $catalog, int $inventoryFactCount): int
+    {
+        $advisoryCount = count($catalog->advisories);
+        $perAdvisoryFacts = 1; // advisory.catalog
+        $perTargetFacts = 0;
+        foreach ($catalog->advisories as $advisory) {
+            $perAdvisoryFacts += 2 + count($advisory['mitigations']); // as_of, fixed_upstream, mitigations
+            $perTargetFacts += 2 + (in_array($advisory['cve'], self::CONFIGURATION_EXPOSURE_CVES, true) ? 1 : 0);
+        }
+        $assessmentBudget = intdiv(self::MAX_ASSESSMENTS, max(1, $advisoryCount));
+        $factBudget = intdiv(max(0, self::MAX_REPORT_FACTS - $inventoryFactCount - $perAdvisoryFacts), max(1, $perTargetFacts));
+
+        return max(1, min($assessmentBudget, $factBudget));
+    }
+
+    /**
      * Keep the report inside its budget instead of failing it: assess the most relevant targets
      * first (running web workers, then CLI runtimes, then installed packages) and return the rest
      * as omitted, so the report can state what was not assessed rather than imply it was.
@@ -205,20 +228,39 @@ final class AdvisoryEvaluator
      * @phpstan-param list<RuntimeTarget> $targets
      * @phpstan-return array{list<RuntimeTarget>, list<string>}
      */
-    private function budgetTargets(array $targets, int $advisoryCount): array
+    private function budgetTargets(array $targets, int $budget): array
     {
-        $budget = max(1, intdiv(self::MAX_ASSESSMENTS, max(1, $advisoryCount)));
         if (count($targets) <= $budget) {
             return [$targets, []];
         }
-        $rank = static fn(array $target): int => match ($target['kind']) {
-            'fpm', 'apache-mod-php', 'unknown' => 0,
-            'cli' => 1,
-            default => 2,
-        };
+        // Distinct runtimes first: the first worker per runtime identity ranks with web workers;
+        // further identical pool children rank after packages so they cannot push out a CLI of
+        // another PHP version or a package.
+        $seenRuntimes = [];
         $ordered = [];
         foreach ($targets as $position => $target) {
-            $ordered[] = [$rank($target), $position, $target];
+            $rank = match ($target['kind']) {
+                'fpm', 'apache-mod-php', 'unknown' => 0,
+                'cli' => 1,
+                default => 2,
+            };
+            // Only demonstrably identical workers are deprioritised: same packaged runtime, same
+            // version, same provenance result and not running a deleted binary or module. A deleted
+            // or unpackaged worker (whose binary identity is not established) always keeps rank 0.
+            if ($rank === 0 && $target['deleted'] !== true && $target['package'] !== null && $target['package_version'] !== null) {
+                $identity = implode("\0", [
+                    $target['kind'],
+                    $target['package'],
+                    $target['package_version'],
+                    $target['version'] ?? '',
+                    $target['provenance_verified'] ? 'verified' : 'unverified',
+                ]);
+                if (isset($seenRuntimes[$identity])) {
+                    $rank = 3;
+                }
+                $seenRuntimes[$identity] = true;
+            }
+            $ordered[] = [$rank, $position, $target];
         }
         usort($ordered, static fn(array $left, array $right): int => [$left[0], $left[1]] <=> [$right[0], $right[1]]);
         $kept = array_slice($ordered, 0, $budget);
