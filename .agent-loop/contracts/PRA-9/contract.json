@@ -1,0 +1,35 @@
+{
+    "acceptance_criteria": [],
+    "acceptance_observations": [],
+    "approved_at": "2026-11-20T00:11:10+00:00",
+    "approved_by": "voku",
+    "base_commit": null,
+    "behavior_anchors": [],
+    "created_at": "2026-11-20T00:07:11+00:00",
+    "goal": "Issue #38 slice 4: disposable, pinned, network-less real-worker session fixtures in the existing run-disposable-runtime-checks.sh (official php:8.2-fpm and php:8.4-apache images, same digests). FPM scenarios: (1) two pools on an explicit shared save_path with different serializers and upload progress explicitly enabled in one -> CVE-2026-115560 needs_investigation via the shared-store correlation; (2) same with isolated save paths -> not raised; (3) shared store, same serializer -> not raised; (4) no session configuration -> unknown, never verified_fixed; (5) upload progress administratively disabled -> exposure not_observed but verdict unknown (mitigation, not a patch claim); (6) CLI subject never inherits FPM pool risk; (7) CVE-2026-126714 save_handler files -> exposure needs_investigation, redis with a credential-bearing DSN -> unknown and no secret anywhere in the report. Apache scenario: conf.d files backend + redacted DSN. For one scenario validate inventory -> report -> remediation plan (investigate_configuration action, evidence ids exist in the report) and the same verdict through a PHAR built from the production copy. No exploit payloads, no network, no session contents; every assessment keeps compromise unknown and never verified_fixed. Assertions in a new PHPStan-max, PER-CS assert script.",
+    "kind": "task_contract",
+    "non_goals": [],
+    "operating_prompt_manifest": null,
+    "operating_prompts": [],
+    "planned_by": "claude",
+    "revision": 1,
+    "schema_version": "1.0",
+    "scope": [
+        "tests/fixtures/runtime/run-disposable-runtime-checks.sh",
+        "tests/fixtures/runtime/assert-disposable-session-report.php",
+        "tests/fixtures/runtime/session-scenarios",
+        "composer.json",
+        ".github/workflows/bootstrap.yml",
+        "CHANGELOG.md"
+    ],
+    "status": "approved",
+    "tags": [],
+    "task_id": "PRA-9",
+    "updated_at": "2026-11-20T00:11:10+00:00",
+    "validation": [
+        "composer test",
+        "composer analyse",
+        "composer format-check",
+        "bash tests/fixtures/runtime/run-disposable-runtime-checks.sh"
+    ]
+}

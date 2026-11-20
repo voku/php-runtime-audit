@@ -94,10 +94,11 @@ jobs:
       - name: Check PHP-CS-Fixer formatting
         run: composer format-check
       # This script pins and audits its own set of container images (currently PHP 8.2/8.4/8.5
-      # FPM and Apache workers; see the script for the exact pinned digests). That set does not
-      # depend on this job's own matrix.php-version, so the condition below just picks one matrix
-      # leg to run it once instead of three times with identical results.
-      - name: Verify real isolated FPM and Apache workers (8.2/8.4/8.5)
+      # FPM and Apache workers, plus the issue #38 session-store scenarios on 8.2 FPM and 8.4
+      # Apache, also run through the built PHAR; see the script for the exact pinned digests).
+      # That set does not depend on this job's own matrix.php-version, so the condition below
+      # just picks one matrix leg to run it once instead of three times with identical results.
+      - name: Verify real isolated FPM and Apache workers and session-store scenarios (8.2/8.4/8.5)
         if: matrix.php-version == '8.4'
         run: bash tests/fixtures/runtime/run-disposable-runtime-checks.sh
       - name: Validate versioned evidence fixtures

@@ -32,9 +32,10 @@ docker_local info >/dev/null
 test -d "$project_root/vendor"
 
 production="$fixture_dir/project"
-mkdir "$production"
-cp -a -- "$project_root/src" "$project_root/bin" "$project_root/resources" \
+mkdir "$production" "$production/tools"
+cp -a -- "$project_root/src" "$project_root/bin" "$project_root/resources" "$project_root/LICENSE" \
     "$project_root/composer.json" "$project_root/composer.lock" "$project_root/vendor" "$production/"
+cp -- "$project_root/tools/build-phar.php" "$production/tools/"
 # Reuse the locked installed files; remove development packages without network,
 # plugins or repository scripts. The audited runtime loads production code only.
 if ! COMPOSER_DISABLE_NETWORK=1 composer install --working-dir="$production" --no-dev \
@@ -104,3 +105,84 @@ run_fixture fpm 'php:8.2-fpm@sha256:77900c43ba8b8f2f61c73bcf68afbfb1b72a34905247
 run_fixture apache 'php:8.4-apache@sha256:c6527b06c772a2c3cae648ce58c23a2a12ed2fed41cdfb0619ea64be008cc601' apache2 apache-8.4 '8.4.'
 run_fixture fpm 'php:8.5-fpm@sha256:f49965c6e6a237eb3b27a6fc565e167839dc8abc65ee0652af0078f6ecdf4bbd' php-fpm fpm-8.5 '8.5.'
 run_fixture apache 'php:8.5-apache@sha256:7cd25eb48f9763dfeabe8fda3939897aca2001802fadeafa1b602f26c735ef96' apache2 apache-8.5 '8.5.'
+
+# Session-store scenarios (issue #38 slice 4): configuration-only inputs from
+# tests/fixtures/runtime/session-scenarios, mounted read-only into the same pinned, network-less
+# images. No session data is created or read and no request is sent to any worker.
+session_fpm_image='php:8.2-fpm@sha256:77900c43ba8b8f2f61c73bcf68afbfb1b72a349052472e7640d402ef998754b3'
+session_apache_image='php:8.4-apache@sha256:c6527b06c772a2c3cae648ce58c23a2a12ed2fed41cdfb0619ea64be008cc601'
+scenario_root="$project_root/tests/fixtures/runtime/session-scenarios"
+session_assert="$project_root/tests/fixtures/runtime/assert-disposable-session-report.php"
+
+# The same production copy, packaged as the PHAR users download, so one scenario also proves the
+# PHAR reaches the same verdicts as the source tree.
+php -d phar.readonly=0 "$production/tools/build-phar.php" "$fixture_dir/php-runtime-audit.phar" >/dev/null
+
+run_session_fixture() {
+    kind=$1
+    image=$2
+    process_name=$3
+    scenario=$4
+    mode=${5:-source}
+    scenario_dir="$scenario_root/$scenario"
+    test -d "$scenario_dir"
+    mounts=(-v "$production:/audit:ro" -v "$fixture_dir/php-runtime-audit.phar:/opt/php-runtime-audit.phar:ro")
+    if [ -f "$scenario_dir/pools.conf" ]; then
+        mounts+=(-v "$scenario_dir/pools.conf:/usr/local/etc/php-fpm.d/zz-pra-session.conf:ro")
+    fi
+    if [ -f "$scenario_dir/session.ini" ]; then
+        mounts+=(-v "$scenario_dir/session.ini:/usr/local/etc/php/conf.d/zz-pra-session.ini:ro")
+    fi
+    container=$(docker_local run --detach --network none --security-opt no-new-privileges \
+        "${mounts[@]}" "$image")
+    containers+=("$container")
+    pools=()
+    if [ -f "$scenario_dir/pools.conf" ]; then
+        mapfile -t pools < <(sed -n 's/^\[\([A-Za-z0-9_-]*\)\]$/\1/p' "$scenario_dir/pools.conf")
+    fi
+    ready=false
+    for attempt in {1..50}; do
+        # Ready once the expected master runs and every scenario pool has spawned a worker.
+        if docker_local exec "$container" php -r '
+            if (trim((string) file_get_contents("/proc/1/comm")) !== $argv[1]) { exit(1); }
+            $titles = "";
+            foreach (glob("/proc/[0-9]*/cmdline") ?: [] as $file) { $titles .= (string) @file_get_contents($file) . "\n"; }
+            foreach (array_slice($argv, 2) as $pool) { if (!str_contains($titles, "pool " . $pool)) { exit(1); } }
+            exit(0);' "$process_name" "${pools[@]}" >/dev/null 2>&1; then
+            ready=true
+            break
+        fi
+        sleep 0.2
+    done
+    if [ "$ready" != true ]; then
+        docker_local logs "$container" >&2
+        exit 1
+    fi
+    label="session-$scenario-$mode"
+    if [ "$mode" = phar ]; then
+        docker_local exec "$container" php -d register_argc_argv=1 /opt/php-runtime-audit.phar inventory \
+            >"$fixture_dir/$label.json"
+    else
+        docker_local exec --workdir /audit "$container" php -d register_argc_argv=1 bin/php-runtime-audit-inventory \
+            >"$fixture_dir/$label.json"
+    fi
+    plan_args=()
+    if [ "$mode" = remediation ]; then
+        # inventory -> report -> remediation, on the host, with the production copy.
+        php "$production/bin/php-runtime-audit-report" --report "$fixture_dir/$label.md" \
+            <"$fixture_dir/$label.json" >"$fixture_dir/$label.plan.json"
+        test -s "$fixture_dir/$label.md"
+        plan_args=("$fixture_dir/$label.plan.json")
+    fi
+    php "$session_assert" "$fixture_dir/$label.json" "$scenario" "${plan_args[@]}"
+}
+
+run_session_fixture fpm "$session_fpm_image" php-fpm fpm-shared-store-mismatch remediation
+run_session_fixture fpm "$session_fpm_image" php-fpm fpm-shared-store-mismatch phar
+run_session_fixture fpm "$session_fpm_image" php-fpm fpm-isolated-stores
+run_session_fixture fpm "$session_fpm_image" php-fpm fpm-shared-store-same-serializer
+run_session_fixture fpm "$session_fpm_image" php-fpm fpm-no-session-config
+run_session_fixture fpm "$session_fpm_image" php-fpm fpm-upload-progress-disabled
+run_session_fixture fpm "$session_fpm_image" php-fpm fpm-files-backend
+run_session_fixture fpm "$session_fpm_image" php-fpm fpm-redis-dsn
+run_session_fixture apache "$session_apache_image" apache2 apache-files-backend-redacted-dsn

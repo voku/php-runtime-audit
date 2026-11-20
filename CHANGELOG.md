@@ -11,6 +11,7 @@ for current delivery gates). Entries below track notable merges to `main`.
 
 ### Added
 
+- Disposable real-worker session-store scenarios (#38): pinned, network-less official PHP 8.2 FPM and 8.4 Apache containers with shared, isolated and same-serializer stores, missing configuration, administratively disabled upload progress, `files` and redis backends. The shared-store case is also checked through the remediation plan and the built PHAR, and the fixture credential is asserted absent from every output.
 - Read-only `session.save_handler` and `session.save_path` collection per SAPI, configuration root and FPM pool. Save paths that are not plain filesystem paths (redis/memcached DSNs, URLs) are stored only as a scheme label plus a per-run keyed digest, so stores can be compared without exposing credentials (#38).
 - Cross-install session-store correlation for `CVE-2026-115560`: contexts that use different serialization handlers on an explicitly shared store or a shared default location (pools of one install; Debian/Ubuntu packages of every SAPI and version share `/var/lib/php/sessions`), while upload progress is explicitly enabled in at least one of them, raise `needs_investigation`. Configuration-file evidence only; applications can register their own save handler (#38).
 - `CVE-2026-126714` configuration exposure follows the configured backend: `files` asks for investigation, anything else stays `unknown`; the verdict remains patch-driven (#38).
