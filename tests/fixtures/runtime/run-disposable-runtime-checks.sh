@@ -113,6 +113,8 @@ session_fpm_image='php:8.2-fpm@sha256:77900c43ba8b8f2f61c73bcf68afbfb1b72a349052
 session_apache_image='php:8.4-apache@sha256:c6527b06c772a2c3cae648ce58c23a2a12ed2fed41cdfb0619ea64be008cc601'
 scenario_root="$project_root/tests/fixtures/runtime/session-scenarios"
 session_assert="$project_root/tests/fixtures/runtime/assert-disposable-session-report.php"
+ground_truth_assert="$project_root/tests/fixtures/runtime/assert-session-ground-truth.php"
+session_probe="$project_root/tests/fixtures/runtime/session-probe"
 
 # The same production copy, packaged as the PHAR users download, so one scenario also proves the
 # PHAR reaches the same verdicts as the source tree.
@@ -126,7 +128,8 @@ run_session_fixture() {
     mode=${5:-source}
     scenario_dir="$scenario_root/$scenario"
     test -d "$scenario_dir"
-    mounts=(-v "$production:/audit:ro" -v "$fixture_dir/php-runtime-audit.phar:/opt/php-runtime-audit.phar:ro")
+    mounts=(-v "$production:/audit:ro" -v "$fixture_dir/php-runtime-audit.phar:/opt/php-runtime-audit.phar:ro"
+        -v "$session_probe:/opt/pra-probe:ro")
     if [ -f "$scenario_dir/pools.conf" ]; then
         mounts+=(-v "$scenario_dir/pools.conf:/usr/local/etc/php-fpm.d/zz-pra-session.conf:ro")
     fi
@@ -175,6 +178,54 @@ run_session_fixture() {
         plan_args=("$fixture_dir/$label.plan.json")
     fi
     php "$session_assert" "$fixture_dir/$label.json" "$scenario" "${plan_args[@]}"
+    if [ "${#pools[@]}" -eq 2 ] && [ "${pools[0]}" = writer ] && [ "${pools[1]}" = reader ]; then
+        validate_session_ground_truth "$container" "$scenario_dir/pools.conf" "$label"
+    fi
+}
+
+# Validation against ground truth, not only self-consistency: after the read-only inventory,
+# send benign FastCGI requests over the container's own loopback (it still has no network) and
+# observe whether the writer pool's session really lands in the reader pool's store and whether
+# the reader can decode it. The probe stores one plain string, never objects.
+validate_session_ground_truth() {
+    container=$1
+    pools_file=$2
+    label=$3
+    probe=(docker_local exec "$container" php /opt/pra-probe/fastcgi-request.php)
+    script=/opt/pra-probe/www/session.php
+    pool_port() {
+        awk -v pool="[$1]" '$0 == pool { in_pool = 1; next } /^\[/ { in_pool = 0 }
+            in_pool && $1 == "listen" { sub(/.*:/, "", $3); print $3; exit }' "$pools_file"
+    }
+    writer_port=$(pool_port writer)
+    reader_port=$(pool_port reader)
+    # The pools' session directories do not exist in the image; create them for the probe only.
+    while read -r directory; do
+        docker_local exec "$container" mkdir -p "$directory"
+        docker_local exec "$container" chown www-data:www-data "$directory"
+    done < <(sed -n 's/^php_admin_value\[session\.save_path\] = \(\/[A-Za-z0-9._\/-]*\)$/\1/p' "$pools_file" | sort -u)
+    session_id="pragroundtruth$RANDOM"
+    reader_info=$("${probe[@]}" "$reader_port" "$script" "op=info")
+    writer_result=$("${probe[@]}" "$writer_port" "$script" "op=write&id=$session_id")
+    reader_path=$(php -r 'echo json_decode($argv[1], true, 8, JSON_THROW_ON_ERROR)["save_path"];' "$reader_info")
+    # Shared store: the writer's session file exists in the reader's live save_path before the
+    # reader starts a session there (starting one would create an empty file itself).
+    shared=false
+    if docker_local exec "$container" test -s "$reader_path/sess_$session_id"; then
+        shared=true
+    fi
+    reader_result=$("${probe[@]}" "$reader_port" "$script" "op=read&id=$session_id")
+    php -r '
+        $writer = json_decode($argv[1], true, 8, JSON_THROW_ON_ERROR);
+        $reader = json_decode($argv[2], true, 8, JSON_THROW_ON_ERROR);
+        echo json_encode([
+            "writer_read_back" => ($writer["read_back"] ?? null) === true,
+            "shared_store" => $argv[3] === "true",
+            "reader_decodes" => ($reader["started"] ?? null) === true && ($reader["read_back"] ?? null) === true,
+            "writer_serializer" => $writer["serializer"] ?? null,
+            "reader_serializer" => $reader["serializer"] ?? null,
+        ], JSON_THROW_ON_ERROR);' "$writer_result" "$reader_result" "$shared" >"$fixture_dir/$label.ground-truth.json"
+    php "$ground_truth_assert" "$fixture_dir/$label.json" "$fixture_dir/$label.ground-truth.json"
 }
 
 run_session_fixture fpm "$session_fpm_image" php-fpm fpm-shared-store-mismatch remediation

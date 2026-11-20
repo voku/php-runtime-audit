@@ -1,0 +1,15 @@
+{
+    "schema_version": "1.0",
+    "kind": "run_learning_decision",
+    "run_id": "run:PRA-10:c3dce73a8b2befbe",
+    "decision": "follow_up_required",
+    "decided_by": "claude",
+    "decided_at": "2026-11-20T01:23:14+00:00",
+    "reason": "PRA-11: writer-persistence check (writer session must exist in its own live save_path) and live save_path normalisation, set aside to keep PRA-10 on its reviewed tree; plus review follow-ups: ground truth gated on writer/reader pool names without a run-count assertion; reader_decodes does not distinguish open/permission failures from decode failures. Finding: the official FPM image's OPcache is shared across pools and folds ini_get('session.*') at compile time.",
+    "finding_ids": [],
+    "follow_up_ref": "https://github.com/voku/php-runtime-audit/issues/38",
+    "contract_revision": 1,
+    "implementation_snapshot": "sha256:fa63dbd606fb49842c0430cb5c62e6681e55e915c6d2c3757152de1d7a539df3",
+    "validation_evidence_sha256": "sha256:5555441dda862d10381e4bf187f3fbe7e5851860003fe6fb921a3972a9c3c708",
+    "review_evidence_sha256": "sha256:2ae524ec232fa78dc36f708504c3dcb8072d77828b2f4ecefd58566ec89c8283"
+}
