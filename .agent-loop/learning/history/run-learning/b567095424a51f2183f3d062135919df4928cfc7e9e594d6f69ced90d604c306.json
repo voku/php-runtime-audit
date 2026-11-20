@@ -1,0 +1,15 @@
+{
+    "schema_version": "1.0",
+    "kind": "run_learning_decision",
+    "run_id": "run:PRA-16:4dbf60dffcbbdd5d",
+    "decision": "follow_up_required",
+    "decided_by": "claude",
+    "decided_at": "2026-11-20T14:04:02+00:00",
+    "reason": "Defensive Apache null-deletion identity fix and clearer fixed-evidence overflow error; the collector still does not bound its inventory below the report limits (open in #38).",
+    "finding_ids": [],
+    "follow_up_ref": "issue#38",
+    "contract_revision": 1,
+    "implementation_snapshot": "sha256:e84dfb74ec1fbcdfcb5e1367543ef5e743c3309adfb6f542b778e738c490ff53",
+    "validation_evidence_sha256": "sha256:6a68d9b26ba2106598c6013540eb1358df8797e7da91e55e0c61667fef76d1a2",
+    "review_evidence_sha256": "sha256:513a338ad7d7e62029fd6fe7e7b3b64481a4de8a3ae97b14beed84378f83dcb3"
+}

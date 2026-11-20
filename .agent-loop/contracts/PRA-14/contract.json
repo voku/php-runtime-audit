@@ -1,0 +1,34 @@
+{
+    "acceptance_criteria": [],
+    "acceptance_observations": [],
+    "approved_at": "2026-11-20T07:51:54+00:00",
+    "approved_by": "voku",
+    "base_commit": null,
+    "behavior_anchors": [],
+    "created_at": "2026-11-20T07:44:22+00:00",
+    "goal": "Issue #38 step 2: add the 15 remaining verified 2026-11-19 php-src advisories to the bundled catalog as data only (CVE-2026-129289, 129496, 129474, 129182, 129481, 129291, 127960, 128064, 128090, 15353, 129506, 129501, 129438, 129292, 129538), each with its GHSA source_url, revision 2026-11-19, fixed_upstream exactly as the GHSA lists per branch (no 8.6 entry, no fixed version for 8.1 where the GHSA lists None, 8.5-only or 8.4+-only advisories only on those branches), mitigations only where the GHSA names a configuration or server setting (effect partial unless the GHSA says it removes the described path), and no vendor_rules. No evaluator or verdict code changes: the new advisories go through the existing conservative patch path (unknown without vendor rules) within the PRA-12/13 assessment budget. Update tests for the catalog contents and assessment counts, README advisory list, and the CHANGELOG (also qualifying the PRA-13 pool-worker entry as packaged runtimes only).",
+    "kind": "task_contract",
+    "non_goals": [],
+    "operating_prompt_manifest": null,
+    "operating_prompts": [],
+    "planned_by": "claude",
+    "revision": 1,
+    "schema_version": "1.0",
+    "scope": [
+        "resources/advisories/php2shell/v1.json",
+        "tests/Advisories/AdvisoryCatalogTest.php",
+        "tests/Advisories/AdvisoryEvaluatorTest.php",
+        "README.md",
+        "CHANGELOG.md"
+    ],
+    "status": "approved",
+    "tags": [],
+    "task_id": "PRA-14",
+    "updated_at": "2026-11-20T07:51:54+00:00",
+    "validation": [
+        "composer test",
+        "composer analyse",
+        "composer format-check",
+        "bash tests/fixtures/runtime/run-disposable-runtime-checks.sh"
+    ]
+}

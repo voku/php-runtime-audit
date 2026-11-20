@@ -34,6 +34,66 @@ final class AdvisoryCatalogTest extends TestCase
         self::assertSame('8.2.35', $advisories['CVE-2026-109618']['fixed_upstream']['8.2']);
     }
 
+    /** @return iterable<string, array{string, string, array<string, string>, array<string, string>}> */
+    public static function novemberAdvisories(): iterable
+    {
+        $all = ['8.2' => '8.2.36', '8.3' => '8.3.37', '8.4' => '8.4.28', '8.5' => '8.5.13'];
+        yield 'CVE-2026-129289' => ['CVE-2026-129289', 'qc49-hpvq-g2w6', $all, ['nginx fastcgi_keep_conn / Apache mod_proxy_fcgi enablereuse' => 'blocks-described-vector']];
+        yield 'CVE-2026-129496' => ['CVE-2026-129496', 'gr4f-wgx5-jpfv', $all, ['error_log' => 'partial']];
+        yield 'CVE-2026-129474' => ['CVE-2026-129474', '8mjj-2r7p-4hg2', ['8.5' => '8.5.13'], ['zend.exception_ignore_args' => 'blocks-described-vector', 'fatal_error_backtraces' => 'blocks-described-vector']];
+        // GHSA-2fjv offers fatal_error_backtraces=0 only as a temporary workaround, so it stays partial.
+        yield 'CVE-2026-129182' => ['CVE-2026-129182', '2fjv-p558-g82m', ['8.5' => '8.5.13'], ['fatal_error_backtraces' => 'partial']];
+        yield 'CVE-2026-129481' => ['CVE-2026-129481', 'g3vh-838c-65v7', ['8.3' => '8.3.37', '8.4' => '8.4.28', '8.5' => '8.5.13'], ['pm.max_requests' => 'partial']];
+        yield 'CVE-2026-129291' => ['CVE-2026-129291', 'jm4m-qfqx-967m', $all, ['catch_workers_output' => 'blocks-described-vector']];
+        yield 'CVE-2026-127960' => ['CVE-2026-127960', 'mmf9-xm3v-hg2x', $all, ['request_terminate_timeout' => 'partial']];
+        yield 'CVE-2026-128064' => ['CVE-2026-128064', 'f6gg-rchx-xw8j', $all, []];
+        yield 'CVE-2026-128090' => ['CVE-2026-128090', '68fq-fh7h-f8gr', $all, []];
+        yield 'CVE-2026-15353' => ['CVE-2026-15353', 'q23r-hr55-xmpg', $all, []];
+        yield 'CVE-2026-129506' => ['CVE-2026-129506', '4646-p932-gw34', $all, []];
+        yield 'CVE-2026-129501' => ['CVE-2026-129501', 'x8r7-mg3g-74hg', ['8.4' => '8.4.28', '8.5' => '8.5.13'], []];
+        yield 'CVE-2026-129438' => ['CVE-2026-129438', 'mg3p-mxj9-g2mm', ['8.5' => '8.5.13'], []];
+        yield 'CVE-2026-129292' => ['CVE-2026-129292', '3mg3-cr28-46gc', $all, ['pm.status_path' => 'blocks-described-vector']];
+        yield 'CVE-2026-129538' => ['CVE-2026-129538', '5j3f-64r7-f564', $all, ['cgi.fix_pathinfo' => 'blocks-described-vector']];
+    }
+
+    /**
+     * @param array<string, string> $expectedFixed
+     * @param array<string, string> $expectedMitigations setting => effect, exactly as the GHSA supports it
+     */
+    #[DataProvider('novemberAdvisories')]
+    public function test_bundled_catalog_carries_the_verified_november_advisory(string $cve, string $ghsa, array $expectedFixed, array $expectedMitigations): void
+    {
+        $advisories = $this->byCve(AdvisoryCatalog::load());
+
+        self::assertArrayHasKey($cve, $advisories);
+        $advisory = $advisories[$cve];
+        self::assertSame('https://github.com/php/php-src/security/advisories/GHSA-' . $ghsa, $advisory['source_url']);
+        self::assertSame('2026-11-19', $advisory['revision']);
+        // Exactly the branches the GHSA lists: no 8.6, no unfixed 8.1, branch-limited where stated.
+        self::assertSame($expectedFixed, $advisory['fixed_upstream']);
+        // Vendor backports must be sourced individually; none are encoded yet.
+        self::assertSame([], $advisory['vendor_rules']);
+        // Each mitigation is pinned: "blocks-described-vector" only where the GHSA says the setting removes the path.
+        $mitigations = [];
+        foreach ($advisory['mitigations'] as $mitigation) {
+            self::assertSame($advisory['source_url'], $mitigation['source_url']);
+            $mitigations[$mitigation['setting']] = $mitigation['effect'];
+        }
+        self::assertSame($expectedMitigations, $mitigations);
+    }
+
+    public function test_bundled_catalog_lists_every_2026_11_19_advisory_once(): void
+    {
+        $catalog = AdvisoryCatalog::load();
+        $november = array_filter($catalog->advisories, static fn(array $advisory): bool => $advisory['revision'] === '2026-11-19');
+
+        self::assertCount(17, $november);
+        self::assertCount(19, $catalog->advisories);
+        // One entry per CVE and one per GHSA: no advisory is listed twice under another id.
+        self::assertCount(19, array_unique(array_column($catalog->advisories, 'cve')));
+        self::assertCount(17, array_unique(array_column($november, 'source_url')));
+    }
+
     public function test_cve_126714_upload_progress_mitigation_is_only_partial(): void
     {
         $advisory = $this->byCve(AdvisoryCatalog::load())['CVE-2026-126714'];
@@ -80,6 +140,111 @@ final class AdvisoryCatalogTest extends TestCase
     {
         $this->expectException(InvalidArgumentException::class);
         $this->loadWithFixedUpstream($fixedUpstream);
+    }
+
+    public function test_bundled_catalog_stays_within_its_report_limits(): void
+    {
+        $catalog = AdvisoryCatalog::load();
+        $urls = [];
+        $facts = 1;
+        foreach ($catalog->advisories as $advisory) {
+            $urls[$advisory['source_url']] = true;
+            foreach ([...$advisory['mitigations'], ...$advisory['vendor_rules']] as $entry) {
+                $urls[$entry['source_url']] = true;
+            }
+            $facts += 2 + count($advisory['mitigations']);
+        }
+
+        self::assertLessThanOrEqual(AdvisoryCatalog::MAX_DISTINCT_SOURCE_URLS, count($urls));
+        self::assertLessThanOrEqual(AdvisoryCatalog::MAX_CATALOG_FACTS, $facts);
+    }
+
+    public function test_distinct_source_urls_are_capped_including_mitigation_and_vendor_rule_sources(): void
+    {
+        // 32 advisories x (main + mitigation + vendor rule) = 96 distinct URLs: accepted.
+        self::assertCount(32, $this->loadWithDistinctSources(32)->advisories);
+
+        // One more advisory adds three more distinct URLs: rejected at load time.
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('distinct source URLs');
+        $this->loadWithDistinctSources(33);
+    }
+
+    public function test_catalog_level_facts_are_capped(): void
+    {
+        // 1 catalog fact + 51 advisories x (2 + 3 mitigations) = 256 facts: accepted.
+        self::assertCount(51, $this->loadWithMitigationCount(51, 3)->advisories);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('catalog facts');
+        $this->loadWithMitigationCount(52, 3);
+    }
+
+    public function test_source_urls_longer_than_a_report_locator_are_rejected(): void
+    {
+        $url = 'https://example.invalid/' . str_repeat('a', 232);
+        self::assertSame(256, strlen($url));
+        self::assertSame($url, $this->loadAdvisories([$this->advisory(0, $url)])->advisories[0]['source_url']);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->loadAdvisories([$this->advisory(0, $url . 'a')]);
+    }
+
+    private function loadWithDistinctSources(int $count): AdvisoryCatalog
+    {
+        $advisories = [];
+        for ($index = 0; $index < $count; ++$index) {
+            $advisory = $this->advisory($index, 'https://example.invalid/advisory/' . $index);
+            $advisory['mitigations'] = [['setting' => 'x', 'value' => 'y', 'effect' => 'partial', 'source_url' => 'https://example.invalid/mitigation/' . $index]];
+            $advisory['vendor_rules'] = [[
+                'vendor' => 'debian', 'release' => 'bookworm', 'package_names' => ['php8.2-fpm'],
+                'fixed_version' => '8.2.36-1', 'source_url' => 'https://example.invalid/rule/' . $index, 'revision' => '2026-11-19',
+            ]];
+            $advisories[] = $advisory;
+        }
+
+        return $this->loadAdvisories($advisories);
+    }
+
+    private function loadWithMitigationCount(int $count, int $mitigations): AdvisoryCatalog
+    {
+        $advisories = [];
+        for ($index = 0; $index < $count; ++$index) {
+            $advisory = $this->advisory($index, 'https://example.invalid/advisory');
+            $advisory['mitigations'] = array_map(
+                static fn(int $mitigation): array => ['setting' => 'x' . $mitigation, 'value' => 'y', 'effect' => 'partial', 'source_url' => 'https://example.invalid/advisory'],
+                range(1, $mitigations),
+            );
+            $advisories[] = $advisory;
+        }
+
+        return $this->loadAdvisories($advisories);
+    }
+
+    /** @return array<string, mixed> */
+    private function advisory(int $index, string $sourceUrl): array
+    {
+        return [
+            'cve' => sprintf('CVE-2026-9%05d', $index),
+            'title' => 'Synthetic advisory',
+            'source_url' => $sourceUrl,
+            'revision' => '2026-11-19',
+            'fixed_upstream' => ['8.4' => '8.4.28'],
+            'mitigations' => [],
+            'vendor_rules' => [],
+        ];
+    }
+
+    /** @param list<array<string, mixed>> $advisories */
+    private function loadAdvisories(array $advisories): AdvisoryCatalog
+    {
+        $path = sys_get_temp_dir() . '/pra-catalog-test-' . bin2hex(random_bytes(8)) . '.json';
+        file_put_contents($path, json_encode(['schema_version' => '1.0', 'as_of' => '2026-11-19', 'advisories' => $advisories], JSON_THROW_ON_ERROR));
+        try {
+            return AdvisoryCatalog::load($path);
+        } finally {
+            unlink($path);
+        }
     }
 
     /** @return array<string, AdvisoryDefinition> */

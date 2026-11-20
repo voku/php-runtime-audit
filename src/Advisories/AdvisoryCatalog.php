@@ -15,6 +15,16 @@ use voku\PhpRuntimeAudit\Evidence\DuplicateJsonKeyGuard;
  */
 final readonly class AdvisoryCatalog
 {
+    /**
+     * Catalog-level output must leave the inventory and at least some runtime targets room within
+     * the report's 256-source and 1024-fact limits: every distinct source URL (advisory,
+     * mitigation and vendor rule) can become one report source, and every advisory adds its
+     * as_of and fixed_upstream facts plus one fact per mitigation, whether or not any runtime
+     * target is assessed.
+     */
+    public const MAX_DISTINCT_SOURCE_URLS = 96;
+    public const MAX_CATALOG_FACTS = 256;
+
     /** @phpstan-var list<AdvisoryDefinition> */
     public array $advisories;
 
@@ -59,6 +69,8 @@ final readonly class AdvisoryCatalog
         $rawAdvisories = $data['advisories'];
         $ids = [];
         $advisories = [];
+        $sourceUrls = [];
+        $catalogFacts = 1; // advisory.catalog
         foreach ($rawAdvisories as $rawAdvisory) {
             $advisory = self::validateAdvisory($rawAdvisory);
             if (in_array($advisory['cve'], $ids, true)) {
@@ -66,6 +78,20 @@ final readonly class AdvisoryCatalog
             }
             $ids[] = $advisory['cve'];
             $advisories[] = $advisory;
+            $sourceUrls[$advisory['source_url']] = true;
+            foreach ([...$advisory['mitigations'], ...$advisory['vendor_rules']] as $entry) {
+                $sourceUrls[$entry['source_url']] = true;
+            }
+            $catalogFacts += 2 + count($advisory['mitigations']);
+        }
+        if (count($sourceUrls) > self::MAX_DISTINCT_SOURCE_URLS || $catalogFacts > self::MAX_CATALOG_FACTS) {
+            throw new InvalidArgumentException(sprintf(
+                'Advisory catalog exceeds its report limits (%d distinct source URLs, %d catalog facts; at most %d and %d).',
+                count($sourceUrls),
+                $catalogFacts,
+                self::MAX_DISTINCT_SOURCE_URLS,
+                self::MAX_CATALOG_FACTS,
+            ));
         }
 
         return new self($data['as_of'], 'sha256:' . hash('sha256', $json), gmdate('Y-m-d\TH:i:s\Z'), $advisories);
@@ -165,9 +191,10 @@ final readonly class AdvisoryCatalog
         ];
     }
 
+    /** Source URLs become report source locators, which the evidence schema caps at 256 bytes. */
     private static function isSourceUrl(string $url): bool
     {
-        return strlen($url) <= 2048
+        return strlen($url) <= 256
             && filter_var($url, FILTER_VALIDATE_URL) !== false
             && parse_url($url, PHP_URL_SCHEME) === 'https';
     }
