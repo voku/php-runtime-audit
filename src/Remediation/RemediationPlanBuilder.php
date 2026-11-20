@@ -45,6 +45,17 @@ final class RemediationPlanBuilder
             $advisoriesByCve[$advisory['cve']] = $advisory;
         }
 
+        foreach ($records as $record) {
+            if (!is_array($record) || ($record['record_type'] ?? null) !== 'coverage' || !is_array($record['entries'] ?? null)) {
+                continue;
+            }
+            foreach ($record['entries'] as $entry) {
+                if (is_array($entry) && ($entry['check_id'] ?? null) === 'advisory.assessment-budget' && ($entry['status'] ?? null) !== 'attempted') {
+                    $warnings[] = 'Not every runtime subject was assessed: the report hit its assessment budget, so some subjects have no proposals here. See the advisory.assessment-budget coverage entry; absence of a proposal is not evidence of safety.';
+                }
+            }
+        }
+
         $actions = [];
         foreach ($records as $record) {
             if (!is_array($record) || ($record['record_type'] ?? null) !== 'assessment') {

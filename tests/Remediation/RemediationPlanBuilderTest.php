@@ -141,6 +141,27 @@ final class RemediationPlanBuilderTest extends TestCase
         }
     }
 
+    public function test_omitted_assessments_surface_as_a_report_warning(): void
+    {
+        $inventory = $this->collectInventory('debian-fpm');
+        $sourceId = $inventory['facts'][0]['source_id'];
+        for ($added = 0; $added < 12; ++$added) {
+            $index = count($inventory['packages']);
+            $inventory['packages'][] = ['name' => sprintf('php8.%d-cli', 3 + $added % 3), 'version' => '8.3.' . $added . '-1'];
+            $inventory['facts'][] = ['fact_id' => 'fact.package.' . $index . '.version', 'key' => 'package.' . $index . '.version', 'value' => '8.3.' . $added . '-1', 'source_id' => $sourceId];
+        }
+        $catalog = \voku\PhpRuntimeAudit\Tests\Advisories\AdvisoryEvaluatorTest::syntheticCatalogWithAdvisoryCount(19);
+        $report = (new RuntimeAuditReportBuilder())->build($inventory, (new AdvisoryEvaluator())->evaluate($inventory, $catalog));
+
+        $warnings = (new RemediationPlanBuilder($catalog))->build($report)->warnings;
+        $budgetWarnings = array_filter($warnings, static fn(string $warning): bool => str_contains($warning, 'Not every runtime subject was assessed'));
+        self::assertCount(1, $budgetWarnings);
+        self::assertSame([], array_filter(
+            $this->buildPlanFor('debian-fpm')->warnings,
+            static fn(string $warning): bool => str_contains($warning, 'Not every runtime subject was assessed'),
+        ));
+    }
+
     private function buildPlanFor(string $fixture): RemediationPlan
     {
         $inventory = $this->collectInventory($fixture);

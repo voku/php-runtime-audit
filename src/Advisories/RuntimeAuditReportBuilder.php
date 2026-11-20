@@ -35,7 +35,7 @@ final readonly class RuntimeAuditReportBuilder
         }
         $facts = array_merge($inventory['facts'], $evaluation['facts']);
         $assessments = $evaluation['assessments'];
-        if (count($sourcesById) > 256 || count($facts) > 1024 || count($assessments) > 128) {
+        if (count($sourcesById) > 256 || count($facts) > 1024 || count($assessments) > AdvisoryEvaluator::MAX_ASSESSMENTS) {
             throw new RuntimeException('Generated local evidence exceeds schema collection limits.');
         }
 
@@ -63,6 +63,23 @@ final readonly class RuntimeAuditReportBuilder
                 'status' => $entry['status'],
                 'evidence_ids' => array_values(array_unique($entry['evidence_ids'])),
                 'gap' => $entry['gap'],
+            ];
+        }
+        $omitted = $evaluation['omitted_subject_ids'] ?? [];
+        if ($omitted !== []) {
+            // Never imply full coverage: subjects beyond the assessment budget are reported as not assessed.
+            $listed = implode(', ', array_slice($omitted, 0, 12)) . (count($omitted) > 12 ? ', ...' : '');
+            $coverageEntries[] = [
+                'subject_id' => $inventory['asset_id'],
+                'check_id' => 'advisory.assessment-budget',
+                'status' => 'blocked',
+                'evidence_ids' => [],
+                'gap' => substr(sprintf(
+                    '%d runtime subject(s) were not assessed: the advisory catalog times the runtime targets exceeds the %d-assessment report budget. Running web workers were assessed first, then CLI runtimes, then packages. Not assessed: %s.',
+                    count($omitted),
+                    AdvisoryEvaluator::MAX_ASSESSMENTS,
+                    $listed,
+                ), 0, 1000),
             ];
         }
         $coverageRecord = [

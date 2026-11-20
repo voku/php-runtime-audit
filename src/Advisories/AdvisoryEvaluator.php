@@ -20,7 +20,7 @@ use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
  * @phpstan-type AdvisoryFact array{fact_id: string, key: string, value: mixed, source_id: string}
  * @phpstan-type AdvisoryAssessment array{record_type: 'assessment', schema_version: '1.0', record_id: string, subject_id: string, assessed_at: string, verdict: string, patch_status: string, patch_evidence_ids: list<string>, compromise_evidence: array{status: 'unknown', evidence_ids: list<string>}, rationale: string}
  * @phpstan-type AssessmentBasis array{verdict: string, patch_status: string, reason: string, configuration_exposure: array{state: string, reason: string, derived_from_fact_ids: list<string>, observed_files: list<string>}|null}
- * @phpstan-type AdvisoryEvaluation array{sources: list<AdvisorySource>, facts: list<AdvisoryFact>, assessments: list<AdvisoryAssessment>}
+ * @phpstan-type AdvisoryEvaluation array{sources: list<AdvisorySource>, facts: list<AdvisoryFact>, assessments: list<AdvisoryAssessment>, omitted_subject_ids?: list<string>}
  */
 final class AdvisoryEvaluator
 {
@@ -28,6 +28,11 @@ final class AdvisoryEvaluator
     private const INI_TRUE_VALUES = ['1', 'on', 'true', 'yes'];
     private const INI_FALSE_VALUES = ['0', 'off', 'false', 'no', 'none', ''];
     private const WEB_SAPIS = ['fpm', 'apache2'];
+    /**
+     * Report budget: one assessment per advisory and runtime target. Each costs roughly 2.7 KiB of
+     * output including its facts, so 256 keeps a full report well inside the 1 MiB evidence limit.
+     */
+    public const MAX_ASSESSMENTS = 256;
 
     /**
      * @phpstan-param RuntimeInventory $inventory
@@ -42,6 +47,7 @@ final class AdvisoryEvaluator
         if ($targets === []) {
             $targets[] = ['id' => 'web-runtime-unknown', 'subject_id' => 'local-host', 'kind' => 'unknown', 'version' => null, 'package' => null, 'package_version' => null, 'source_fact_id' => null, 'package_fact_id' => null, 'deleted' => false, 'provenance_verified' => false, 'provenance_fact_id' => null];
         }
+        [$targets, $omittedSubjectIds] = $this->budgetTargets($targets, count($catalog->advisories));
 
         /** @var list<AdvisorySource> $sources */
         $sources = [[
@@ -183,7 +189,46 @@ final class AdvisoryEvaluator
             }
         }
 
-        return ['sources' => $sources, 'facts' => $facts, 'assessments' => $assessments];
+        $evaluation = ['sources' => $sources, 'facts' => $facts, 'assessments' => $assessments];
+        if ($omittedSubjectIds !== []) {
+            $evaluation['omitted_subject_ids'] = $omittedSubjectIds;
+        }
+
+        return $evaluation;
+    }
+
+    /**
+     * Keep the report inside its budget instead of failing it: assess the most relevant targets
+     * first (running web workers, then CLI runtimes, then installed packages) and return the rest
+     * as omitted, so the report can state what was not assessed rather than imply it was.
+     *
+     * @phpstan-param list<RuntimeTarget> $targets
+     * @phpstan-return array{list<RuntimeTarget>, list<string>}
+     */
+    private function budgetTargets(array $targets, int $advisoryCount): array
+    {
+        $budget = max(1, intdiv(self::MAX_ASSESSMENTS, max(1, $advisoryCount)));
+        if (count($targets) <= $budget) {
+            return [$targets, []];
+        }
+        $rank = static fn(array $target): int => match ($target['kind']) {
+            'fpm', 'apache-mod-php', 'unknown' => 0,
+            'cli' => 1,
+            default => 2,
+        };
+        $ordered = [];
+        foreach ($targets as $position => $target) {
+            $ordered[] = [$rank($target), $position, $target];
+        }
+        usort($ordered, static fn(array $left, array $right): int => [$left[0], $left[1]] <=> [$right[0], $right[1]]);
+        $kept = array_slice($ordered, 0, $budget);
+        // Preserve the original target order among the kept ones.
+        usort($kept, static fn(array $left, array $right): int => $left[1] <=> $right[1]);
+
+        return [
+            array_map(static fn(array $entry): array => $entry[2], $kept),
+            array_map(static fn(array $entry): string => $entry[2]['subject_id'], array_slice($ordered, $budget)),
+        ];
     }
 
     /**

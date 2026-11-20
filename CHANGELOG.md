@@ -27,6 +27,7 @@ for current delivery gates). Entries below track notable merges to `main`.
 
 ### Fixed
 
+- A large advisory catalog on a host with many PHP runtimes no longer aborts the whole report. The evaluator now stays within a 256-assessment budget, assessing running web workers first, then CLI runtimes, then packages. Subjects beyond the budget are listed in a `blocked` `advisory.assessment-budget` coverage entry, and the remediation plan warns that absence of a proposal is not evidence of safety (#38).
 - `session.upload_progress.enabled = yes` (and other trimmed ini boolean spellings) is now recognised as enabled (#38).
 - FPM `php_flag[...]` / `php_admin_flag[...]` pool directives are now parsed like `php_value` / `php_admin_value` (#38).
 - The advisory catalog rejects leading-zero branch and version segments (#38).

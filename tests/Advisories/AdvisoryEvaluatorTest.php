@@ -682,6 +682,96 @@ final class AdvisoryEvaluatorTest extends TestCase
         self::assertSame([], $assessment['patch_evidence_ids']);
     }
 
+    public function test_bundled_catalog_assesses_every_target_without_a_budget_gap(): void
+    {
+        [$inventory, $evaluation] = $this->evaluate('debian-fpm');
+        $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+
+        self::assertArrayNotHasKey('omitted_subject_ids', $evaluation);
+        foreach ($report['records'] as $record) {
+            foreach (is_array($record['entries'] ?? null) ? $record['entries'] : [] as $entry) {
+                self::assertIsArray($entry);
+                self::assertNotSame('advisory.assessment-budget', $entry['check_id'] ?? null);
+            }
+        }
+    }
+
+    public function test_large_catalog_on_a_multi_version_host_reports_omitted_subjects_instead_of_failing(): void
+    {
+        $catalog = self::syntheticCatalogWithAdvisoryCount(19);
+        $inventory = $this->withExtraPhpPackages($this->collectInventory('debian-fpm'), 12);
+
+        [, $evaluation] = $this->evaluateInventory($inventory, $catalog);
+        $report = (new RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+
+        // 256 / 19 advisories = 13 targets assessed; the 16-target host loses 3, packages first.
+        self::assertSame(13 * 19, $report['summary']['assessment_count']);
+        self::assertLessThanOrEqual(AdvisoryEvaluator::MAX_ASSESSMENTS, $report['summary']['assessment_count']);
+        $omitted = $evaluation['omitted_subject_ids'] ?? [];
+        self::assertCount(3, $omitted);
+        foreach ($omitted as $subjectId) {
+            self::assertStringStartsWith('package-', $subjectId);
+        }
+        $assessedSubjects = array_unique(array_column($evaluation['assessments'], 'subject_id'));
+        self::assertNotSame([], array_filter($assessedSubjects, static fn(string $id): bool => str_starts_with($id, 'worker-')));
+        self::assertNotSame([], array_filter($assessedSubjects, static fn(string $id): bool => str_starts_with($id, 'cli-')));
+        self::assertSame([], array_intersect($assessedSubjects, $omitted));
+
+        $budgetEntry = null;
+        foreach ($report['records'] as $record) {
+            foreach (is_array($record['entries'] ?? null) ? $record['entries'] : [] as $entry) {
+                if (is_array($entry) && ($entry['check_id'] ?? null) === 'advisory.assessment-budget') {
+                    $budgetEntry = $entry;
+                }
+            }
+        }
+        self::assertIsArray($budgetEntry);
+        self::assertSame('blocked', $budgetEntry['status']);
+        self::assertIsString($budgetEntry['gap']);
+        self::assertStringContainsString('3 runtime subject(s) were not assessed', $budgetEntry['gap']);
+        self::assertStringContainsString($omitted[0], $budgetEntry['gap']);
+    }
+
+    public static function syntheticCatalogWithAdvisoryCount(int $count): AdvisoryCatalog
+    {
+        $json = file_get_contents(AdvisoryCatalog::defaultPath());
+        self::assertIsString($json);
+        $data = json_decode($json, true, 32, JSON_THROW_ON_ERROR);
+        self::assertIsArray($data);
+        self::assertIsArray($data['advisories']);
+        $template = $data['advisories'][0];
+        for ($index = count($data['advisories']); $index < $count; ++$index) {
+            $copy = $template;
+            self::assertIsArray($copy);
+            $copy['cve'] = sprintf('CVE-2026-9%05d', $index);
+            $data['advisories'][] = $copy;
+        }
+        $path = sys_get_temp_dir() . '/pra-budget-catalog-' . bin2hex(random_bytes(8)) . '.json';
+        file_put_contents($path, json_encode($data, JSON_THROW_ON_ERROR));
+        try {
+            return AdvisoryCatalog::load($path);
+        } finally {
+            unlink($path);
+        }
+    }
+
+    /**
+     * @phpstan-param RuntimeInventory $inventory
+     * @phpstan-return RuntimeInventory
+     */
+    private function withExtraPhpPackages(array $inventory, int $count): array
+    {
+        $sourceId = $inventory['facts'][0]['source_id'];
+        for ($added = 0; $added < $count; ++$added) {
+            $index = count($inventory['packages']);
+            $version = sprintf('8.%d.%d-1', 3 + intdiv($added, 4), $added);
+            $inventory['packages'][] = ['name' => sprintf('php8.%d-%s', 3 + intdiv($added, 4), ['cli', 'fpm', 'cgi', 'cli'][$added % 4]), 'version' => $version];
+            $inventory['facts'][] = ['fact_id' => 'fact.package.' . $index . '.version', 'key' => 'package.' . $index . '.version', 'value' => $version, 'source_id' => $sourceId];
+        }
+
+        return $inventory;
+    }
+
     /**
      * Synthetic vendor rules for tests only; the bundled catalog carries no November vendor rules.
      */
