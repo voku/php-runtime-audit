@@ -33,7 +33,7 @@
   "require-dev": {
     "friendsofphp/php-cs-fixer": "^3.86",
     "phpstan/phpstan": "^2.1",
-    "phpunit/phpunit": "^11.5",
+    "phpunit/phpunit": "^13.0",
     "voku/agent-loop": "^0.20.72"
   },
   "autoload": {
