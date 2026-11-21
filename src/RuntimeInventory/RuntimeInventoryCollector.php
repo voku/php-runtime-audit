@@ -1143,7 +1143,9 @@ final class RuntimeInventoryCollector
             [
                 'check_id' => 'runtime.packages',
                 'status' => $packageState['state'] === 'attempted' && !$this->packageInventoryTruncated ? 'attempted' : 'blocked',
-                'evidence_ids' => $this->factIdsForPrefix('packages.'),
+                // Per-package file-observation details stay in observations only: up to 256
+                // accepted packages would add 512 detail IDs and break the 512-ID coverage schema.
+                'evidence_ids' => $this->packageCoverageFactIds(),
                 'gap' => $packageCoverageGap,
             ],
             [
@@ -1178,6 +1180,20 @@ final class RuntimeInventoryCollector
         $ids = [];
         foreach ($this->facts as $fact) {
             if (str_starts_with($fact['key'], $prefix)) {
+                $ids[] = $fact['fact_id'];
+            }
+        }
+
+        return $ids;
+    }
+
+    /** @return list<string> */
+    private function packageCoverageFactIds(): array
+    {
+        $ids = [];
+        foreach ($this->facts as $fact) {
+            if (str_starts_with($fact['key'], 'packages.')
+                && preg_match('/^packages\.file_observation\.\d+\./', $fact['key']) !== 1) {
                 $ids[] = $fact['fact_id'];
             }
         }

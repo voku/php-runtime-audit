@@ -171,6 +171,33 @@ final class BoundedDpkgStatusReaderTest extends TestCase
         self::assertSame('8.3.6', $facts['packages.file_observation.0.version']);
     }
 
+    public function testMaximumObservedPackagesStillBuildAValidReportWhenDpkgCommandIsBlocked(): void
+    {
+        $contents = '';
+        for ($index = 0; $index < 256; ++$index) {
+            $contents .= "Package: php8.3-ext{$index}\nStatus: install ok installed\nVersion: 8.3.6\n\n";
+        }
+        self::assertNotFalse(file_put_contents($this->root . '/var/lib/dpkg/status', $contents));
+        self::assertNotFalse(file_put_contents($this->root . '/commands.json', '{"commands":{}}'));
+
+        $inventory = (new \voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector(
+            new \voku\PhpRuntimeAudit\RuntimeInventory\FixtureProcessRunner($this->root),
+            $this->root,
+            '2026-10-31T00:00:00Z',
+        ))->collect();
+
+        $facts = array_column($inventory['facts'], 'value', 'key');
+        self::assertSame(256, $facts['packages.file_observation.package_count']);
+        self::assertSame('php8.3-ext255', $facts['packages.file_observation.255.name']);
+        $coverage = array_column($inventory['coverage'], 'evidence_ids', 'check_id');
+        self::assertLessThanOrEqual(512, count($coverage['runtime.packages']));
+
+        $evaluation = (new \voku\PhpRuntimeAudit\Advisories\AdvisoryEvaluator())
+            ->evaluate($inventory, \voku\PhpRuntimeAudit\Advisories\AdvisoryCatalog::load());
+        $report = (new \voku\PhpRuntimeAudit\Advisories\RuntimeAuditReportBuilder())->build($inventory, $evaluation);
+        self::assertNotEmpty($report['records']);
+    }
+
     public function testMalformedStatusRemainsUnknownWhenPackageCommandIsBlocked(): void
     {
         file_put_contents($this->root . '/var/lib/dpkg/status', self::validStatus() . "\n" . self::validStatus());

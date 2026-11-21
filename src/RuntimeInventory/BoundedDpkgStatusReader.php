@@ -41,7 +41,8 @@ final readonly class BoundedDpkgStatusReader
             || $before['size'] < 1 || $before['size'] > self::MAX_STATUS_BYTES) {
             throw new RuntimeException('Dpkg status is missing, non-regular or oversized.');
         }
-        $stream = @fopen($path, 'rb');
+        // 'n' (O_NONBLOCK): a FIFO swapped in after lstat() must not block open(2); fstat() below rejects it.
+        $stream = @fopen($path, 'rbn');
         if ($stream === false) {
             throw new RuntimeException('Dpkg status cannot be opened for reading.');
         }
