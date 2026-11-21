@@ -5,6 +5,7 @@ on:
     paths:
       - 'composer.json'
       - 'composer.lock'
+      - 'renovate.json'
       - 'bin/php-runtime-audit'
       - 'bin/php-runtime-audit-evidence'
       - 'bin/php-runtime-audit-inventory'
@@ -30,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up PHP 8.2 and Composer
@@ -41,6 +42,22 @@ jobs:
           coverage: none
       - name: Validate Composer manifest
         run: composer validate --no-check-publish
+      - name: Validate conservative Renovate onboarding policy
+        run: |
+          php -r '
+            $config = json_decode(file_get_contents("renovate.json"), true, 512, JSON_THROW_ON_ERROR);
+            if (!is_array($config)
+                // Deny extra keys, including nested packageRules that could override automerge.
+                || count($config) !== 5
+                || ($config["$" . "schema"] ?? null) !== "https://docs.renovatebot.com/renovate-schema.json"
+                || ($config["extends"] ?? null) !== ["config:recommended"]
+                || ($config["automerge"] ?? null) !== false
+                || ($config["prConcurrentLimit"] ?? null) !== 3
+                || ($config["minimumReleaseAge"] ?? null) !== "3 days") {
+                fwrite(STDERR, "Renovate onboarding safety policy invalid.\\n");
+                exit(1);
+            }
+          '
       - name: Install production dependencies on PHP 8.2
         run: composer install --no-dev --no-interaction --prefer-dist --no-progress
       - name: Smoke-test offline runtime evidence on PHP 8.2
@@ -59,7 +76,7 @@ jobs:
       matrix:
         php-version: ['8.3', '8.4', '8.5']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up PHP and Composer

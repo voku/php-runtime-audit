@@ -21,11 +21,16 @@ use voku\PhpRuntimeAudit\RuntimeInventory\RuntimeInventoryCollector;
  * @phpstan-type AdvisoryFact array{fact_id: string, key: string, value: mixed, source_id: string}
  * @phpstan-type AdvisoryAssessment array{record_type: 'assessment', schema_version: '1.0', record_id: string, subject_id: string, assessed_at: string, verdict: string, patch_status: string, patch_evidence_ids: list<string>, compromise_evidence: array{status: 'unknown', evidence_ids: list<string>}, rationale: string}
  * @phpstan-type AdvisoryCoverage array{check_id: string, status: 'attempted'|'blocked', evidence_ids: list<string>, gap: string|null}
+ * @phpstan-type AssessmentBasis array{verdict: string, patch_status: string, reason: string, configuration_exposure: array{state: string, reason: string, derived_from_fact_ids: list<string>, observed_files: list<string>}|null}
  * @phpstan-type AdvisoryEvaluation array{sources: list<AdvisorySource>, facts: list<AdvisoryFact>, assessments: list<AdvisoryAssessment>, coverage: list<AdvisoryCoverage>}
  */
 final class AdvisoryEvaluator
 {
     private const MAX_TARGETS = 128;
+    /** PHP ini boolean spellings (case-insensitive, trimmed). */
+    private const INI_TRUE_VALUES = ['1', 'on', 'true', 'yes'];
+    private const INI_FALSE_VALUES = ['0', 'off', 'false', 'no', 'none', ''];
+    private const WEB_SAPIS = ['fpm', 'apache2'];
 
     /**
      * @phpstan-param RuntimeInventory $inventory
@@ -169,6 +174,20 @@ final class AdvisoryEvaluator
                     ],
                     $sourceId,
                 );
+                if ($basis['configuration_exposure'] !== null) {
+                    $this->addFact(
+                        $facts,
+                        'advisory.' . $advisory['cve'] . '.' . $targetId . '.configuration_exposure',
+                        [
+                            'state' => $basis['configuration_exposure']['state'],
+                            'reason' => $basis['configuration_exposure']['reason'],
+                            'independent_of' => ['patch_status', 'compromise_evidence'],
+                            'derived_from_fact_ids' => $basis['configuration_exposure']['derived_from_fact_ids'],
+                            'observed_files' => $basis['configuration_exposure']['observed_files'],
+                        ],
+                        $mainSourceId,
+                    );
+                }
                 $evidenceIds = [];
                 foreach ([
                     $target['source_fact_id'],
@@ -789,11 +808,11 @@ final class AdvisoryEvaluator
         array $secondExpected,
     ): bool {
         foreach ($firstSetting['observations'] as $firstObservation) {
-            if (!in_array(strtolower($firstObservation['value']), $firstExpected, true)) {
+            if (!in_array(strtolower(trim($firstObservation['value'])), $firstExpected, true)) {
                 continue;
             }
             foreach ($secondSetting['observations'] as $secondObservation) {
-                if (!in_array(strtolower($secondObservation['value']), $secondExpected, true)) {
+                if (!in_array(strtolower(trim($secondObservation['value'])), $secondExpected, true)) {
                     continue;
                 }
                 if ($firstObservation['configuration_root'] === null
@@ -905,16 +924,54 @@ final class AdvisoryEvaluator
      * @phpstan-param RuntimeInventory $inventory
      * @phpstan-param RuntimeTarget $target
      * @phpstan-param VendorRule|null $rule
-     * @phpstan-return array{verdict: string, patch_status: string, reason: string}
+     * @phpstan-return AssessmentBasis
      */
     private function assess(array $advisory, array $inventory, array $target, ?array $rule): array
     {
+        // Patch status, configuration exposure and compromise are independent axes. The patch
+        // axis always comes from the same conservative vendor/provenance path and is never changed
+        // by configuration. Configuration exposure is its own fact (not patch evidence); it can only
+        // turn an unknown or verified_fixed verdict into needs_investigation.
+        $patch = $this->patchAssessment($inventory, $target, $rule);
+
+        $configurationSapi = match ($target['kind']) {
+            'fpm' => 'fpm',
+            'apache-mod-php' => 'apache2',
+            default => null,
+        };
+
+        if ($advisory['cve'] === 'CVE-2026-126714') {
+            $handlerSetting = $configurationSapi === null
+                ? ['value' => null, 'state' => 'unknown', 'files' => [], 'observations' => []]
+                : $this->configurationForTarget(
+                    $inventory['configuration_by_sapi'][$configurationSapi]['session.save_handler'],
+                    $target,
+                    $inventory,
+                );
+            // Any observed files selection for this runtime (including a global value that pools
+            // may inherit while another pool overrides it) is enough to ask for investigation.
+            $filesConfigured = in_array(
+                'files',
+                array_map(static fn(array $observation): string => strtolower(trim($observation['value'])), $handlerSetting['observations']),
+                true,
+            );
+            $caveat = ' Applications can register their own save handler (session_set_save_handler or framework session storage), which overrides session.save_handler, and disabling upload progress is only a partial measure because applications can store untrusted data in file-backed sessions independently.';
+
+            return $patch + ['configuration_exposure' => [
+                // Configuration can point at the affected backend but can never rule it out.
+                'state' => $filesConfigured ? 'needs_investigation' : 'unknown',
+                'reason' => ($filesConfigured
+                    ? 'The inspected configuration selects the affected files session backend for this runtime or for some of its pools.'
+                    : ($configurationSapi === null
+                        ? 'No PHP web runtime was identified for this subject.'
+                        : 'The inspected configuration does not establish a non-files session backend for this runtime (PHP defaults to files when session.save_handler is unset).'))
+                    . $caveat,
+                'derived_from_fact_ids' => $this->configurationFactIds($inventory, $configurationSapi, ['session.save_handler']),
+                'observed_files' => $handlerSetting['files'],
+            ]];
+        }
+
         if ($advisory['cve'] === 'CVE-2026-115560') {
-            $configurationSapi = match ($target['kind']) {
-                'fpm' => 'fpm',
-                'apache-mod-php' => 'apache2',
-                default => null,
-            };
             $knownWebRuntime = $configurationSapi !== null;
             $settingsObserved = false;
             $uploadSetting = ['value' => null, 'state' => 'unknown', 'files' => [], 'observations' => []];
@@ -933,30 +990,109 @@ final class AdvisoryEvaluator
                 $settingsObserved = $uploadSetting['state'] === 'observed'
                     && $serializeSetting['state'] === 'observed';
             }
-            $riskConfiguration = $knownWebRuntime
+            // not_observed only means the collected configuration has upload progress disabled; it
+            // is not store-wide proof and never clears a verified fix into a no-action verdict.
+            $uploadProgressDisabled = $settingsObserved
+                && is_string($uploadSetting['value'])
+                && in_array(strtolower(trim($uploadSetting['value'])), self::INI_FALSE_VALUES, true);
+            $sameContextRisk = $knownWebRuntime
                 && $this->hasCooccurringConfigurationObservations(
                     $uploadSetting,
-                    ['1', 'on', 'true', 'yes'],
+                    self::INI_TRUE_VALUES,
                     $serializeSetting,
                     ['php_binary', 'php_serialize'],
                 );
-            if ($riskConfiguration) {
+            $unresolvedStoreContexts = false;
+            $sharedStoreMismatch = $configurationSapi === null || $sameContextRisk
+                ? null
+                : $this->sharedStoreSerializerMismatch($inventory, $configurationSapi, $target, $unresolvedStoreContexts);
+            $riskConfiguration = $sameContextRisk || $sharedStoreMismatch !== null;
+            if ($sameContextRisk) {
                 $reason = 'One or more inspected web-SAPI configuration sources contain upload progress enabled and a serialization handler named in the advisory; precedence, per-pool applicability, application code, request path, and runtime handler changes remain unverified.';
+            } elseif ($sharedStoreMismatch !== null) {
+                $reason = $sharedStoreMismatch;
             } elseif (!$knownWebRuntime) {
                 $reason = 'No PHP web runtime was identified; configuration alone cannot establish that the described path is reachable.';
             } elseif (!$settingsObserved) {
-                $reason = 'Relevant configuration is missing or conflicting; .user.ini or Apache per-directory overrides and application code changes are not observed, and no upstream fixed release is listed.';
+                $reason = 'Relevant configuration is missing or conflicting; .user.ini or Apache per-directory overrides and application code changes are not observed.';
+            } elseif (!$uploadProgressDisabled) {
+                $reason = 'Upload progress is enabled in the inspected configuration without an observed same-context or shared-store serializer mismatch, but applications can register their own save handler or store, and readers or writers outside the inspected configuration are not collected, so a cross-store serializer mismatch cannot be excluded.';
             } else {
-                $reason = 'Inspected configuration does not meet the described startup conditions, but .user.ini or Apache per-directory overrides and application code may change effective behavior; applicability remains unknown.';
+                $reason = 'Inspected configuration has upload progress disabled, but administrative scope (php_admin_value), .user.ini or Apache per-directory overrides, other writers of the same session store, and application code are not established; applicability remains unknown.';
+            }
+
+            $exposure = [
+                'state' => $riskConfiguration
+                    ? 'needs_investigation'
+                    // A web context with conflicting session values could share the store unseen.
+                    : ($knownWebRuntime && $uploadProgressDisabled && !$unresolvedStoreContexts ? 'not_observed' : 'unknown'),
+                'reason' => $reason,
+                'derived_from_fact_ids' => $this->configurationFactIds(
+                    $inventory,
+                    $configurationSapi,
+                    $sharedStoreMismatch !== null
+                        ? ['session.upload_progress.enabled', 'session.serialize_handler', 'session.save_handler', 'session.save_path']
+                        : ['session.upload_progress.enabled', 'session.serialize_handler'],
+                ),
+                'observed_files' => array_values(array_unique([...$uploadSetting['files'], ...$serializeSetting['files']])),
+            ];
+            if ($riskConfiguration && $patch['patch_status'] === 'potentially_affected') {
+                // Keep the upgrade action: remediation is driven by the verdict, so an unpatched
+                // runtime must not be downgraded to a configuration-only finding.
+                return [
+                    'verdict' => 'potentially_affected',
+                    'patch_status' => 'potentially_affected',
+                    'reason' => $patch['reason'] . ' Configuration exposure (assessed separately, also needs investigation): ' . $reason,
+                    'configuration_exposure' => $exposure,
+                ];
+            }
+            if ($riskConfiguration) {
+                return [
+                    'verdict' => 'needs_investigation',
+                    'patch_status' => $patch['patch_status'],
+                    'reason' => $reason
+                        . ($patch['patch_status'] === 'verified_fixed'
+                            ? ' The verified fix does not make an explicitly enabled upload-progress path safe when readers and writers of the same session store use different serialization handlers.'
+                            : '')
+                        . ' Patch evidence (assessed separately): ' . $patch['reason'],
+                    'configuration_exposure' => $exposure,
+                ];
+            }
+
+            if ($patch['verdict'] === 'verified_fixed') {
+                // A verified fix never becomes a no-action result for this advisory: it requires
+                // matching serializers (or upload progress administratively disabled) across every
+                // writer of a shared session store even after the update. The collector cannot
+                // establish php_admin_value scope, .user.ini/.htaccess overrides, or other store
+                // writers, so even locally disabled upload progress is not store-wide proof.
+                return [
+                    'verdict' => 'needs_investigation',
+                    'patch_status' => 'verified_fixed',
+                    'reason' => 'The patch is verified, but the advisory requires every reader and writer of a shared session store to use the same serialization handler, or upload progress to be administratively disabled for all of them, even after the update; administrative scope, per-directory overrides and other store writers are not collected. Configuration exposure (assessed separately): ' . $reason
+                        . ' Patch evidence (assessed separately): ' . $patch['reason'],
+                    'configuration_exposure' => $exposure,
+                ];
             }
 
             return [
-                'verdict' => $riskConfiguration ? 'needs_investigation' : 'unknown',
-                'patch_status' => 'unknown',
-                'reason' => $reason,
+                'verdict' => $patch['verdict'],
+                'patch_status' => $patch['patch_status'],
+                'reason' => $patch['reason'] . ' Configuration exposure (assessed separately): ' . $reason,
+                'configuration_exposure' => $exposure,
             ];
         }
 
+        return $patch + ['configuration_exposure' => null];
+    }
+
+    /**
+     * @phpstan-param RuntimeInventory $inventory
+     * @phpstan-param RuntimeTarget $target
+     * @phpstan-param VendorRule|null $rule
+     * @phpstan-return array{verdict: string, patch_status: string, reason: string}
+     */
+    private function patchAssessment(array $inventory, array $target, ?array $rule): array
+    {
         $version = $target['version'];
         if ($version === null || $target['deleted']) {
             return [
@@ -968,7 +1104,6 @@ final class AdvisoryEvaluator
             ];
         }
 
-        $rule = $rule ?? null;
         if ($target['package'] !== null && $target['package_version'] === null) {
             return [
                 'verdict' => 'unknown',
@@ -1134,7 +1269,7 @@ final class AdvisoryEvaluator
     /**
      * @phpstan-param AdvisoryDefinition $advisory
      * @phpstan-param RuntimeTarget $target
-     * @phpstan-param array{verdict: string, patch_status: string, reason: string} $basis
+     * @phpstan-param AssessmentBasis $basis
      * @phpstan-param VendorRule|null $rule
      */
     private function rationale(array $advisory, string $asOf, array $target, array $basis, ?array $rule): string
@@ -1151,7 +1286,13 @@ final class AdvisoryEvaluator
             : ' Advisory mitigation guidance: ' . implode('; ', $guidance) . '. These measures are path-specific and do not establish a fixed patch or absence of compromise.';
         $rationale = $basis['reason'] . $version . $package . $source . $mitigations;
 
-        return substr($rationale, 0, 1999);
+        $rationale = substr($rationale, 0, 1999);
+        // Never end inside a multibyte character: invalid UTF-8 would abort report encoding.
+        for ($trim = 0; $trim < 3 && preg_match('//u', $rationale) !== 1; ++$trim) {
+            $rationale = substr($rationale, 0, -1);
+        }
+
+        return preg_match('//u', $rationale) === 1 ? $rationale : (string) preg_replace('/[^\x20-\x7E]/', '?', $rationale);
     }
 
     /**
@@ -1188,6 +1329,160 @@ final class AdvisoryEvaluator
         $facts[] = ['fact_id' => $id, 'key' => $key, 'value' => $value, 'source_id' => $sourceId];
 
         return $id;
+    }
+
+    /**
+     * Inventory facts a configuration-exposure judgment was derived from. Shared-store
+     * correlation reads every web SAPI, so it cites both SAPIs' facts for those settings.
+     *
+     * @phpstan-param RuntimeInventory $inventory
+     * @param list<string> $settings
+     * @return list<string>
+     */
+    private function configurationFactIds(array $inventory, ?string $sapi, array $settings): array
+    {
+        if ($sapi === null) {
+            return [];
+        }
+        $sapis = array_intersect($settings, ['session.save_handler', 'session.save_path']) !== [] && count($settings) > 1
+            ? self::WEB_SAPIS
+            : [$sapi];
+        $ids = [];
+        foreach ($sapis as $factSapi) {
+            foreach ($settings as $setting) {
+                $id = $this->factId($inventory['facts'], 'configuration.' . $factSapi . '.' . $setting);
+                if ($id !== null) {
+                    $ids[] = $id;
+                }
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Debian/Ubuntu PHP packages of every version and SAPI (/etc/php/X.Y/{fpm,apache2}) are built
+     * with the same default session.save_path (/var/lib/php/sessions), so the default resolves to
+     * that path and groups with an explicit spelling of it. Other installs (source builds,
+     * containers, RHEL/Remi) keep a per-install default.
+     */
+    private function defaultSessionStore(string $sapi, string $root): string
+    {
+        if (preg_match('#\A/etc/php/[0-9]+\.[0-9]+/(?:fpm|apache2)\z#', $root) === 1) {
+            return '/var/lib/php/sessions';
+        }
+
+        return "default\0" . $sapi . "\0" . $root;
+    }
+
+    /**
+     * Correlate session stores across web contexts (FPM pools, per-root globals, Apache).
+     * A context's effective value is its own observation, else its root's global value, else
+     * PHP's default. Contexts whose configured store matches (or that all use the default
+     * location) and whose serializers differ, while at least one of them explicitly enables
+     * upload progress, are reported. This is a correlation hint from configuration files only:
+     * a match raises an investigation, a non-match never clears anything.
+     *
+     * @phpstan-param RuntimeInventory $inventory
+     * @phpstan-param RuntimeTarget $target
+     */
+    private function sharedStoreSerializerMismatch(array $inventory, string $targetSapi, array $target, bool &$unresolved = false): ?string
+    {
+        $unresolved = false;
+        $settings = ['session.upload_progress.enabled', 'session.serialize_handler', 'session.save_handler', 'session.save_path'];
+        $targetRoots = [];
+        foreach ($settings as $setting) {
+            $selected = $this->configurationForTarget($inventory['configuration_by_sapi'][$targetSapi][$setting], $target, $inventory);
+            foreach ($selected['observations'] as $observation) {
+                if (is_string($observation['configuration_root'])) {
+                    $targetRoots[$observation['configuration_root']] = true;
+                }
+            }
+        }
+        if ($targetRoots === []) {
+            return null;
+        }
+
+        // values[sapi][root][context][setting] = list of observed values
+        $values = [];
+        foreach (['fpm', 'apache2'] as $sapi) {
+            $sapiSettings = $inventory['configuration_by_sapi'][$sapi];
+            foreach ($settings as $setting) {
+                foreach ($sapiSettings[$setting]['observations'] as $observation) {
+                    if (!is_string($observation['configuration_root'])) {
+                        continue;
+                    }
+                    $values[$sapi][$observation['configuration_root']][$observation['context']][$setting][] = trim($observation['value']);
+                }
+            }
+        }
+
+        $groups = [];
+        foreach ($values as $sapi => $roots) {
+            foreach ($roots as $root => $contexts) {
+                $global = $contexts['global'] ?? [];
+                // The global section stays a member even when pools exist: pools without session
+                // directives are not emitted by the collector but inherit exactly these values.
+                // If every pool overrides them this can over-report, which only raises a result.
+                $contextNames = array_keys($contexts);
+                if (!in_array('global', $contextNames, true)) {
+                    $contextNames[] = 'global';
+                }
+                foreach ($contextNames as $context) {
+                    $effective = [];
+                    foreach ($settings as $setting) {
+                        $observed = array_values(array_unique($contexts[$context][$setting] ?? $global[$setting] ?? []));
+                        if (count($observed) > 1) {
+                            $unresolved = true; // conflicting values: this context cannot be judged.
+                            continue 2;
+                        }
+                        $effective[$setting] = $observed[0] ?? null;
+                    }
+                    $handler = strtolower($effective['session.save_handler'] ?? 'files');
+                    $path = $effective['session.save_path'];
+                    if ($path !== null && preg_match('#\A(?:[0-9]{1,3};(?:[0-7]{3,4};)?)?(/.*)\z#', $path, $pathMatch) === 1) {
+                        // The files handler's "N;" / "N;MODE;" prefix does not change the directory.
+                        $path = rtrim($pathMatch[1], '/') ?: '/';
+                    }
+                    // An unset save_path resolves to a build-specific default: shared within one
+                    // install, and across Debian/Ubuntu packages (see defaultSessionStore()).
+                    $store = $handler . "\0" . ($path === null || $path === ''
+                        ? $this->defaultSessionStore($sapi, (string) $root)
+                        : $path);
+                    $groups[$store][] = [
+                        // Root and pool names come from the host: keep them printable ASCII and bounded.
+                        'label' => substr((string) preg_replace('/[^\x20-\x7E]/', '?', $sapi . ':' . $root . ':' . ($context === 'global' && count($contexts) > 1 ? 'global (pools without overrides)' : $context)), 0, 120),
+                        'is_target' => $sapi === $targetSapi && isset($targetRoots[(string) $root]),
+                        'upload_enabled' => in_array(strtolower((string) $effective['session.upload_progress.enabled']), self::INI_TRUE_VALUES, true),
+                        'serializer' => strtolower($effective['session.serialize_handler'] ?? 'php'),
+                        'default_location' => $path === null || $path === '',
+                    ];
+                }
+            }
+        }
+
+        foreach ($groups as $members) {
+            // The advisory requires identical serializers for every reader and writer of a
+            // shared store while upload progress is enabled, so any difference is reported.
+            $writers = array_filter($members, static fn(array $member): bool => $member['upload_enabled']);
+            if ($writers === [] || count(array_unique(array_column($members, 'serializer'))) < 2
+                || !in_array(true, array_column($members, 'is_target'), true)) {
+                continue;
+            }
+            $labels = array_slice(array_map(
+                static fn(array $member): string => $member['label'] . ' (serializer ' . $member['serializer'] . ($member['upload_enabled'] ? ', upload progress enabled' : '') . ')',
+                $members,
+            ), 0, 8);
+            $sharing = $members[0]['default_location']
+                ? 'appear to share one default session location (session.save_path unset: pools of one install share its default, and Debian/Ubuntu packages of every SAPI and version share /var/lib/php/sessions; separate pools do not imply separate storage)'
+                : 'configure the same session store';
+
+            return 'Inspected web contexts ' . $sharing . ' with different serialization handlers while upload progress is explicitly enabled in at least one of them; the advisory requires identical handlers for every reader and writer of the store: '
+                . implode('; ', $labels)
+                . '. This comes from configuration files only; applications can register their own save handler or store, and precedence and per-directory overrides remain unverified.';
+        }
+
+        return null;
     }
 
     /** @phpstan-param list<RuntimeFact> $facts */
